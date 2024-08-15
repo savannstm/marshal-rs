@@ -156,7 +156,7 @@ fn ruby_struct() {
             0x6E, 0x61, 0x6D, 0x65, 0x49, 0x22, 0x0A, 0x41, 0x6C, 0x69, 0x63, 0x65, 0x06, 0x3A,
             0x06, 0x45, 0x54, 0x3A, 0x08, 0x61, 0x67, 0x65, 0x69, 0x23
         ]),
-        json!({"__class": "__symbol__Person", "__members": {"__symbol____symbol__age": 30, "__symbol____symbol__name": {"__type": "bytes", "data":  [65, 108, 105, 99, 101]}}, "__type": "struct"})
+        json!({"__class": "__symbol__Person", "__members": {"__symbol__age": 30, "__symbol__name": {"__type": "bytes", "data":  [65, 108, 105, 99, 101]}}, "__type": "struct"})
     )
 }
 

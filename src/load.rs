@@ -188,7 +188,7 @@ impl Loader {
         }
     }
 
-    fn read_regexp(&mut self, buffer: &[u8]) -> String {
+    fn read_regexp(&mut self, buffer: &[u8]) -> Value {
         let string: String = self.read_string(buffer);
         let regex_type: u8 = self.read_byte(buffer);
         let mut flags: String = String::new();
@@ -201,39 +201,7 @@ impl Loader {
             flags += "m";
         }
 
-        format!("/{string}/{flags}")
-    }
-
-    fn set_hash(&mut self, hash: &mut Value, key: Value, value: Value) {
-        let mut key_string: String = String::new();
-
-        if let Some(key_str) = key.as_str() {
-            if key_str.starts_with("__symbol__") {
-                key_string += "__symbol__";
-                key_string += key_str;
-            }
-        } else if let Some(key_num) = key.as_i64() {
-            key_string += "__integer__";
-            key_string += &key_num.to_string();
-        } else if key.is_array() {
-            cfg_if! {
-                if #[cfg(feature = "sonic")] {
-                    let buffer: Vec<u8> = from_value(&key).unwrap();
-                } else {
-                    let buffer: Vec<u8> = from_value(key).unwrap();
-                }
-            }
-
-            key_string = String::from_utf8(buffer).unwrap()
-        } else if key["__type"]
-            .as_str()
-            .is_some_and(|_type: &str| _type == "object")
-        {
-            key_string += "__object__";
-            key_string += &to_string(&key).unwrap();
-        }
-
-        hash[&key_string] = value;
+        json!({"__type": "regexp", "expression": string, "flags": flags})
     }
 
     fn set_instance_var(&mut self, object: &mut Value, key: Value, value: Value) {
@@ -278,7 +246,14 @@ impl Loader {
 
                 for _ in 0..size {
                     let key: Rc<RefCell<Value>> = self.read_next(buffer);
-                    let _: Rc<RefCell<Value>> = self.read_next(buffer);
+
+                    cfg_if! {
+                        if #[cfg(feature = "sonic")] {
+                            let value: Vec<u8> = from_value(&self.read_next(buffer).borrow()).unwrap_or_default();
+                        } else {
+                            let value: Vec<u8> = from_value(self.read_next(buffer).take()).unwrap_or_default();
+                        }
+                    }
 
                     if object.borrow().is_array()
                         && [
@@ -299,7 +274,7 @@ impl Loader {
                             cfg_if! {
                                 if #[cfg(feature = "sonic")] {
                                     *object.borrow_mut() =
-                                        (&unsafe { String::from_utf8_unchecked(array) }).into();
+                                        (&unsafe { String::from_utf8_unchecked(array)  }).into();
                                 } else {
                                     *object.borrow_mut() =
                                         (unsafe { String::from_utf8_unchecked(array) }).into();
@@ -307,7 +282,7 @@ impl Loader {
                             }
                         } else {
                             let (cow, _, _) =
-                                Encoding::for_label(&array).unwrap_or(UTF_8).decode(&array);
+                                Encoding::for_label(&value).unwrap_or(UTF_8).decode(&array);
 
                             cfg_if! {
                                 if #[cfg(feature = "sonic")] {
@@ -328,18 +303,9 @@ impl Loader {
                 let symbol: Rc<RefCell<Value>> = self.read_next(buffer);
                 let object: Rc<RefCell<Value>> = self.read_next(buffer);
 
-                let extends = if object.borrow().is_object() {
-                    if object.borrow_mut().get(EXTENDS_SYMBOL).is_none() {
-                        object.borrow_mut()[EXTENDS_SYMBOL] = json!([]);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-
-                if extends {
+                if object.borrow().is_object() && object.borrow_mut().get(EXTENDS_SYMBOL).is_none()
+                {
+                    object.borrow_mut()[EXTENDS_SYMBOL] = json!([]);
                     object.borrow_mut()[EXTENDS_SYMBOL]
                         .as_array_mut()
                         .unwrap()
@@ -380,7 +346,7 @@ impl Loader {
                 let object_class: String = self.read_string(buffer);
 
                 let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(
-                    json!({ "__class": object_class, "__type": "module" }),
+                    json!({ "__class": object_class, "__type": "module", "__old": structure_type == Constants::ModuleOld }),
                 ));
                 self.objects.push(rc.clone());
                 rc
@@ -451,13 +417,7 @@ impl Loader {
                 rc
             }
             Constants::Regexp => {
-                cfg_if! {
-                    if #[cfg(feature = "sonic")] {
-                        let regexp: Value = (&self.read_regexp(buffer)).into();
-                    } else {
-                        let regexp: Value = self.read_regexp(buffer).into();
-                    }
-                }
+                let regexp: Value = self.read_regexp(buffer);
 
                 let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(regexp));
                 self.objects.push(rc.clone());
@@ -472,13 +432,14 @@ impl Loader {
                 rc
             }
             Constants::Struct => {
+                let struct_class = self.read_next(buffer);
                 cfg_if! {
                     if #[cfg(feature = "sonic")] {
                         let mut ruby_struct: Value =
-                            json!({ "__class": self.read_next(buffer), "__type": "struct" });
+                            json!({ "__class": struct_class, "__type": "struct" });
                     } else {
                         let mut ruby_struct: Value =
-                            json!({ "__class": *self.read_next(buffer), "__type": "struct" });
+                            json!({ "__class": *struct_class, "__type": "struct" });
                     }
                 }
 
@@ -489,7 +450,32 @@ impl Loader {
                     let key: Value = self.read_next(buffer).borrow().clone();
                     let value: Value = self.read_next(buffer).borrow().clone();
 
-                    self.set_hash(&mut hash, key, value)
+                    let mut key_string: String = String::new();
+
+                    if let Some(key_str) = key.as_str() {
+                        key_string += key_str;
+                    } else if let Some(key_num) = key.as_i64() {
+                        key_string += "__integer__";
+                        key_string += &key_num.to_string();
+                    } else if key.is_array() {
+                        cfg_if! {
+                            if #[cfg(feature = "sonic")] {
+                                let buffer: Vec<u8> = from_value(&key).unwrap();
+                            } else {
+                                let buffer: Vec<u8> = from_value(key).unwrap();
+                            }
+                        }
+
+                        key_string = String::from_utf8(buffer).unwrap()
+                    } else if key["__type"]
+                        .as_str()
+                        .is_some_and(|_type: &str| _type == "object")
+                    {
+                        key_string += "__object__";
+                        key_string += &to_string(&key).unwrap();
+                    }
+
+                    hash[&key_string] = value;
                 }
 
                 ruby_struct["__members"] = hash;

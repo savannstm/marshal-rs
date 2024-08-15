@@ -33,6 +33,8 @@ enum Constants {
     // Regular expression flags
     RegexpIgnore = 1,
     RegexpMultiline = 4,
+    RegexpBoth = 5,
+    RegexpNone = 0,
 }
 
 impl std::ops::BitAnd<Constants> for u8 {

@@ -381,6 +381,24 @@ fn write_structure(mut value: Value, symbols: &mut Vec<Value>, buffer: &mut Vec<
                                 },
                                 buffer,
                             ),
+                            "regexp" => {
+                                write_byte(Constants::Regexp, buffer);
+                                write_string(value["expression"].as_str().unwrap(), buffer);
+
+                                let flags = value["flags"].as_str().unwrap();
+
+                                let options: Constants =  if flags == "im" {
+                                    Constants::RegexpBoth
+                                } else if flags.contains('i') {
+                                    Constants::RegexpIgnore
+                                } else if flags.contains('m') {
+                                    Constants::RegexpMultiline
+                                } else {
+                                    Constants::RegexpNone
+                                };
+
+                                write_byte(options, buffer);
+                            }
                             _ => {
                                 let object: &mut Object = value.as_object_mut().unwrap();
 
@@ -530,6 +548,24 @@ fn write_structure(mut value: Value, symbols: &mut Vec<Value>, buffer: &mut Vec<
                                 },
                                 buffer,
                             ),
+                            "regexp" => {
+                                write_byte(Constants::Regexp, buffer);
+                                write_string(value["expression"].as_str().unwrap(), buffer);
+
+                                let flags = value["flags"].as_str().unwrap();
+
+                                let options: Constants =  if flags == "im" {
+                                    Constants::RegexpBoth
+                                } else if flags.contains('i') {
+                                    Constants::RegexpIgnore
+                                } else if flags.contains('m') {
+                                    Constants::RegexpMultiline
+                                } else {
+                                    Constants::RegexpNone
+                                };
+
+                                write_byte(options, buffer);
+                            }
                             _ => {
                                 let object = value.as_object_mut().unwrap();
 
