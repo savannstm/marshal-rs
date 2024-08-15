@@ -8,13 +8,13 @@ fn main() {
 
     // Serialize bytes to a Value
     // If "sonic" feature is enabled, returns sonic_rs::Value, otherwise serde_json::Value
-    let json: serde_json::Value = load(&bytes);
+    let json: serde_json::Value = load(&bytes, None);
     assert_eq!(json, json!(null));
 
     // Here you may write the json object to file using std::fs::write()
 
     // Deserialize object back to bytes
-    let marshal: Vec<u8> = dump(json);
+    let marshal: Vec<u8> = dump(json, None);
     assert_eq!(&marshal, &bytes);
 
     // Here you may write bytes back to the Marshal file

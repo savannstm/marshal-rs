@@ -12,16 +12,17 @@ This crate has two main functions: `load()` and `dump()`.
 
 If serializes Ruby data to JSON using the table:
 
-| Ruby object                                  | Serialized to JSON                                                     |
-| -------------------------------------------- | ---------------------------------------------------------------------- |
-| nil                                          | null                                                                   |
-| 1337 (Integer)                               | 1337                                                                   |
-| 13.37 (Float)                                | 13.37                                                                  |
-| "ligma" (String)                             | {"\_\_type": "bytes", "data": [108, 105, 103, 109, 97]} (Plain object) |
-| :ligma (Symbol)                              | "\_\_symbol\_\_ligma"                                                  |
-| [] (Array)                                   | []                                                                     |
-| {} (Hash)                                    | {} (Plain object)                                                      |
-| Object.new (Including structs, modules etc.) | {"\_\_class": "\_\_symbol\_\_Object", "\_\_type": "object"}            |
+| Ruby object                                  | Serialized to JSON                                                       |
+| -------------------------------------------- | ------------------------------------------------------------------------ |
+| nil                                          | null                                                                     |
+| 1337 (Integer)                               | 1337                                                                     |
+| 13.37 (Float)                                | 13.37                                                                    |
+| "ligma" (String)                             | { "\_\_type": "bytes", "data": [108, 105, 103, 109, 97] } (Plain object) |
+| :ligma (Symbol)                              | "\_\_symbol\_\_ligma"                                                    |
+| /lgma/i (Regex)                              | { "\_\_type": "regexp", "expression": "lgma", flags: "i" }               |
+| [] (Array)                                   | []                                                                       |
+| {} (Hash)                                    | {} (Plain object)                                                        |
+| Object.new (Including structs, modules etc.) | { "\_\_class": "\_\_symbol\_\_Object", "\_\_type": "object" }            |
 
 As you can see, marshal-rs serializes strings as objects containing `data` key, that itself contains a bytes array, representing the string. It currently does not support serialization of Ruby strings to UTF-16 encoded strings, but it will be added someday.
 

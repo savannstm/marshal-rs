@@ -12,9 +12,9 @@ fn main() {
     let mut loader: Loader = Loader::new();
 
     // Load the values of multiple objects
-    let null_value: serde_json::Value = loader.load(&null);
-    let true_value: serde_json::Value = loader.load(&true_);
-    let false_value: serde_json::Value = loader.load(&false_);
+    let null_value: serde_json::Value = loader.load(&null, None);
+    let true_value: serde_json::Value = loader.load(&true_, None);
+    let false_value: serde_json::Value = loader.load(&false_, None);
 
     assert_eq!(null_value, json!(null));
     assert_eq!(true_value, json!(true));
@@ -26,9 +26,9 @@ fn main() {
     let mut dumper: Dumper = Dumper::new();
 
     // Serialize objects back to Marshal bytes
-    let null_marshal: Vec<u8> = dumper.dump(null_value);
-    let true_marshal: Vec<u8> = dumper.dump(true_value);
-    let false_marshal: Vec<u8> = dumper.dump(false_value);
+    let null_marshal: Vec<u8> = dumper.dump(null_value, None);
+    let true_marshal: Vec<u8> = dumper.dump(true_value, None);
+    let false_marshal: Vec<u8> = dumper.dump(false_value, None);
 
     assert_eq!(&null_marshal, &null);
     assert_eq!(&true_marshal, &true_);

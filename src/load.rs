@@ -15,19 +15,22 @@ cfg_if! {
     }
 }
 
-/// Loader, to load multiple files without unnecessary allocations - because load::load() function just returns Loader::new().load() under the hood.
-pub struct Loader {
+pub struct Loader<'a> {
+    buffer: &'a [u8],
     byte_position: usize,
     symbols: Vec<Rc<RefCell<Value>>>,
     objects: Vec<Rc<RefCell<Value>>>,
+    instance_var_prefix: Option<&'a str>,
 }
 
-impl Loader {
+impl<'a> Loader<'a> {
     pub fn new() -> Self {
         Self {
+            buffer: &[],
             byte_position: 0,
             symbols: Vec::new(),
             objects: Vec::new(),
+            instance_var_prefix: None,
         }
     }
 
@@ -49,10 +52,13 @@ impl Loader {
     ///
     /// // Serialize bytes to a Value
     /// // If "sonic" feature is enabled, returns sonic_rs::Value, otherwise serde_json::Value
-    /// let json: serde_json::Value = loader.load(&bytes);
+    /// let json: serde_json::Value = loader.load(&bytes, None);
     /// assert_eq!(json, json!(null));
     /// ```
-    pub fn load(&mut self, buffer: &[u8]) -> Value {
+    pub fn load(&mut self, buffer: &'a [u8], instance_var_prefix: Option<&'a str>) -> Value {
+        self.buffer = buffer;
+        self.instance_var_prefix = instance_var_prefix;
+
         let marshal_version: u16 = u16::from_be_bytes(
             buffer
                 .get(0..2)
@@ -67,7 +73,7 @@ impl Loader {
 
         self.byte_position += 2;
 
-        let value: Value = self.read_next(buffer).take();
+        let value: Value = self.read_next().take();
 
         self.symbols.clear();
         self.objects.clear();
@@ -76,8 +82,9 @@ impl Loader {
         value
     }
 
-    fn read_byte(&mut self, buffer: &[u8]) -> u8 {
-        let byte: u8 = *buffer
+    fn read_byte(&mut self) -> u8 {
+        let byte: u8 = *self
+            .buffer
             .get(self.byte_position)
             .expect("Marshal data is too short.");
 
@@ -85,8 +92,9 @@ impl Loader {
         byte
     }
 
-    fn read_bytes<'a>(&mut self, amount: usize, buffer: &'a [u8]) -> &'a [u8] {
-        let bytes: &[u8] = buffer
+    fn read_bytes(&mut self, amount: usize) -> &[u8] {
+        let bytes: &[u8] = self
+            .buffer
             .get(self.byte_position..self.byte_position + amount)
             .expect("Marshal data is too short.");
 
@@ -94,8 +102,8 @@ impl Loader {
         bytes
     }
 
-    fn read_fixnum(&mut self, buffer: &[u8]) -> i32 {
-        let fixnum_length: i8 = self.read_byte(buffer) as i8;
+    fn read_fixnum(&mut self) -> i32 {
+        let fixnum_length: i8 = self.read_byte() as i8;
 
         match fixnum_length {
             // Fixnum is zero
@@ -104,7 +112,7 @@ impl Loader {
             -4..=4 => {
                 let absolute: i8 = fixnum_length.abs();
                 let scaled: i32 = (4 - absolute as i32) * 8;
-                let bytes: &[u8] = self.read_bytes(absolute as usize, buffer);
+                let bytes: &[u8] = self.read_bytes(absolute as usize);
                 let mut result: i32 = 0;
 
                 for i in (0..absolute as usize).rev() {
@@ -128,19 +136,19 @@ impl Loader {
         }
     }
 
-    fn read_chunk<'a>(&mut self, buffer: &'a [u8]) -> &'a [u8] {
-        let amount: i32 = self.read_fixnum(buffer);
-        self.read_bytes(amount as usize, buffer)
+    fn read_chunk(&mut self) -> &[u8] {
+        let amount: i32 = self.read_fixnum();
+        self.read_bytes(amount as usize)
     }
 
-    fn read_string(&mut self, buffer: &[u8]) -> String {
-        String::from_utf8_lossy(self.read_chunk(buffer)).to_string()
+    fn read_string(&mut self) -> String {
+        String::from_utf8_lossy(self.read_chunk()).to_string()
     }
 
-    fn read_bignum(&mut self, buffer: &[u8]) -> i64 {
-        let sign: u8 = self.read_byte(buffer);
-        let doubled: i32 = self.read_fixnum(buffer) << 1;
-        let bytes: &[u8] = self.read_bytes(doubled as usize, buffer);
+    fn read_bignum(&mut self) -> i64 {
+        let sign: u8 = self.read_byte();
+        let doubled: i32 = self.read_fixnum() << 1;
+        let bytes: &[u8] = self.read_bytes(doubled as usize);
         let mut result: i64 = 0;
 
         for (i, &byte) in bytes.iter().enumerate().take(doubled as usize) {
@@ -177,8 +185,8 @@ impl Loader {
         float.parse::<f64>().ok()
     }
 
-    fn read_float(&mut self, buffer: &[u8]) -> Option<f64> {
-        let string: String = self.read_string(buffer);
+    fn read_float(&mut self) -> Option<f64> {
+        let string: String = self.read_string();
 
         match string.as_str() {
             "inf" => Some(f64::INFINITY),
@@ -188,9 +196,9 @@ impl Loader {
         }
     }
 
-    fn read_regexp(&mut self, buffer: &[u8]) -> Value {
-        let string: String = self.read_string(buffer);
-        let regex_type: u8 = self.read_byte(buffer);
+    fn read_regexp(&mut self) -> Value {
+        let string: String = self.read_string();
+        let regex_type: u8 = self.read_byte();
         let mut flags: String = String::new();
 
         if (regex_type & Constants::RegexpIgnore) != 0 {
@@ -204,23 +212,19 @@ impl Loader {
         json!({"__type": "regexp", "expression": string, "flags": flags})
     }
 
-    fn set_instance_var(&mut self, object: &mut Value, key: Value, value: Value) {
-        object[key.as_str().unwrap()] = value;
-    }
-
-    fn read_next(&mut self, buffer: &[u8]) -> Rc<RefCell<Value>> {
-        let structure_type: Constants = unsafe { transmute(self.read_byte(buffer)) };
+    fn read_next(&mut self) -> Rc<RefCell<Value>> {
+        let structure_type: Constants = unsafe { transmute(self.read_byte()) };
         match structure_type {
             Constants::Nil => Rc::from(RefCell::from(json!(null))),
             Constants::True => Rc::from(RefCell::from(json!(true))),
             Constants::False => Rc::from(RefCell::from(json!(false))),
-            Constants::Fixnum => Rc::from(RefCell::from(json!(self.read_fixnum(buffer)))),
+            Constants::Fixnum => Rc::from(RefCell::from(json!(self.read_fixnum()))),
             Constants::Symbol => {
                 cfg_if! {
                     if #[cfg(feature = "sonic")] {
-                        let symbol: Value = (&("__symbol__".to_owned() + &self.read_string(buffer))).into();
+                        let symbol: Value = (&("__symbol__".to_owned() + &self.read_string())).into();
                     } else {
-                        let symbol: Value = ("__symbol__".to_owned() + &self.read_string(buffer)).into();
+                        let symbol: Value = ("__symbol__".to_owned() + &self.read_string()).into();
                     }
                 }
 
@@ -230,28 +234,28 @@ impl Loader {
                 rc
             }
             Constants::Symlink => {
-                let pos: i32 = self.read_fixnum(buffer);
+                let pos: i32 = self.read_fixnum();
                 self.symbols[pos as usize].clone()
             }
             Constants::Link => {
-                let pos: i32 = self.read_fixnum(buffer);
+                let pos: i32 = self.read_fixnum();
                 self.objects
                     .get(pos as usize)
                     .unwrap_or(&Rc::from(RefCell::from(json!(null))))
                     .clone()
             }
             Constants::InstanceVar => {
-                let object: Rc<RefCell<Value>> = self.read_next(buffer);
-                let size: i32 = self.read_fixnum(buffer);
+                let object: Rc<RefCell<Value>> = self.read_next();
+                let size: i32 = self.read_fixnum();
 
                 for _ in 0..size {
-                    let key: Rc<RefCell<Value>> = self.read_next(buffer);
+                    let key: Rc<RefCell<Value>> = self.read_next();
 
                     cfg_if! {
                         if #[cfg(feature = "sonic")] {
-                            let value: Vec<u8> = from_value(&self.read_next(buffer).borrow()).unwrap_or_default();
+                            let value: Vec<u8> = from_value(&self.read_next().borrow()).unwrap_or_default();
                         } else {
-                            let value: Vec<u8> = from_value(self.read_next(buffer).take()).unwrap_or_default();
+                            let value: Vec<u8> = from_value(self.read_next().take()).unwrap_or_default();
                         }
                     }
 
@@ -300,8 +304,8 @@ impl Loader {
                 object
             }
             Constants::Extended => {
-                let symbol: Rc<RefCell<Value>> = self.read_next(buffer);
-                let object: Rc<RefCell<Value>> = self.read_next(buffer);
+                let symbol: Rc<RefCell<Value>> = self.read_next();
+                let object: Rc<RefCell<Value>> = self.read_next();
 
                 if object.borrow().is_object() && object.borrow_mut().get(EXTENDS_SYMBOL).is_none()
                 {
@@ -315,11 +319,11 @@ impl Loader {
                 object
             }
             Constants::Array => {
-                let size: i32 = self.read_fixnum(buffer);
+                let size: i32 = self.read_fixnum();
                 let mut array: Value = json!(vec![0; size as usize]);
 
                 for i in 0..size as usize {
-                    array[i] = self.read_next(buffer).borrow().clone();
+                    array[i] = self.read_next().borrow().clone();
                 }
 
                 let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(array));
@@ -327,14 +331,14 @@ impl Loader {
                 rc
             }
             Constants::Bignum => {
-                let bignum: i64 = self.read_bignum(buffer);
+                let bignum: i64 = self.read_bignum();
 
                 let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(Value::from(bignum)));
                 self.objects.push(rc.clone());
                 rc
             }
             Constants::Class => {
-                let object_class: String = self.read_string(buffer);
+                let object_class: String = self.read_string();
 
                 let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(
                     json!({ "__class": object_class, "__type": "class" }),
@@ -343,7 +347,7 @@ impl Loader {
                 rc
             }
             Constants::Module | Constants::ModuleOld => {
-                let object_class: String = self.read_string(buffer);
+                let object_class: String = self.read_string();
 
                 let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(
                     json!({ "__class": object_class, "__type": "module", "__old": structure_type == Constants::ModuleOld }),
@@ -352,7 +356,7 @@ impl Loader {
                 rc
             }
             Constants::Float => {
-                let float: Option<f64> = self.read_float(buffer);
+                let float: Option<f64> = self.read_float();
                 let rc: Rc<RefCell<Value>> = match float {
                     Some(value) => {
                         if value == 0f64 {
@@ -368,12 +372,12 @@ impl Loader {
                 rc
             }
             Constants::Hash | Constants::HashDefault => {
-                let hash_size: i32 = self.read_fixnum(buffer);
+                let hash_size: i32 = self.read_fixnum();
                 let mut hash: Value = json!({});
 
                 for _ in 0..hash_size {
-                    let key: Rc<RefCell<Value>> = self.read_next(buffer);
-                    let value: Rc<RefCell<Value>> = self.read_next(buffer);
+                    let key: Rc<RefCell<Value>> = self.read_next();
+                    let value: Rc<RefCell<Value>> = self.read_next();
 
                     let key: String = if let Some(key) = key.borrow().as_number() {
                         "__integer__".to_string() + &to_string(&key).unwrap()
@@ -387,7 +391,7 @@ impl Loader {
                 }
 
                 if structure_type == Constants::HashDefault {
-                    hash[DEFAULT_SYMBOL] = self.read_next(buffer).take();
+                    hash[DEFAULT_SYMBOL] = self.read_next().take();
                 }
 
                 let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(hash));
@@ -395,21 +399,23 @@ impl Loader {
                 rc
             }
             Constants::Object => {
-                let object_class: Rc<RefCell<Value>> = self.read_next(buffer);
+                let object_class: Rc<RefCell<Value>> = self.read_next();
                 let mut object: Value =
                     json!({ "__class": object_class.borrow().clone(), "__type": "object" });
 
-                let object_size: i32 = self.read_fixnum(buffer);
+                let object_size: i32 = self.read_fixnum();
 
                 for _ in 0..object_size {
-                    let key: Rc<RefCell<Value>> = self.read_next(buffer);
-                    let value: Rc<RefCell<Value>> = self.read_next(buffer);
+                    let key: Value = self.read_next().borrow().clone();
+                    let value: Value = self.read_next().borrow().clone();
 
-                    self.set_instance_var(
-                        &mut object,
-                        key.borrow().clone(),
-                        value.borrow().clone(),
-                    );
+                    let key_str = key.as_str().unwrap();
+
+                    if let Some(str) = key_str.strip_prefix('@') {
+                        object[&(self.instance_var_prefix.unwrap_or("@").to_owned() + str)] = value;
+                    } else {
+                        object[key_str] = value;
+                    }
                 }
 
                 let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(object));
@@ -417,14 +423,14 @@ impl Loader {
                 rc
             }
             Constants::Regexp => {
-                let regexp: Value = self.read_regexp(buffer);
+                let regexp: Value = self.read_regexp();
 
                 let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(regexp));
                 self.objects.push(rc.clone());
                 rc
             }
             Constants::String => {
-                let string_bytes: Value = self.read_chunk(buffer).into();
+                let string_bytes: Value = self.read_chunk().into();
                 let object: Value = json!({ "__type": "bytes", "data": string_bytes });
 
                 let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(object));
@@ -432,7 +438,7 @@ impl Loader {
                 rc
             }
             Constants::Struct => {
-                let struct_class = self.read_next(buffer);
+                let struct_class = self.read_next();
                 cfg_if! {
                     if #[cfg(feature = "sonic")] {
                         let mut ruby_struct: Value =
@@ -443,12 +449,12 @@ impl Loader {
                     }
                 }
 
-                let struct_size: i32 = self.read_fixnum(buffer);
+                let struct_size: i32 = self.read_fixnum();
                 let mut hash: Value = json!({});
 
                 for _ in 0..struct_size {
-                    let key: Value = self.read_next(buffer).borrow().clone();
-                    let value: Value = self.read_next(buffer).borrow().clone();
+                    let key: Value = self.read_next().borrow().clone();
+                    let value: Value = self.read_next().borrow().clone();
 
                     let mut key_string: String = String::new();
 
@@ -491,24 +497,20 @@ impl Loader {
                 cfg_if! {
                     if #[cfg(feature = "sonic")] {
                         let mut object: Value =
-                            json!({ "__class": self.read_next(buffer), "__type": "object" });
+                            json!({ "__class": self.read_next(), "__type": "object" });
 
                     } else {
                         let mut object: Value =
-                            json!({ "__class": *self.read_next(buffer), "__type": "object" });
+                            json!({ "__class": *self.read_next(), "__type": "object" });
                     }
                 }
 
                 match structure_type {
-                    Constants::Data => object["__data"] = self.read_next(buffer).borrow().clone(),
-                    Constants::UserClass => {
-                        object["__wrapped"] = self.read_next(buffer).borrow().clone()
-                    }
-                    Constants::UserDefined => {
-                        object["__userDefined"] = (self.read_chunk(buffer)).into()
-                    }
+                    Constants::Data => object["__data"] = self.read_next().borrow().clone(),
+                    Constants::UserClass => object["__wrapped"] = self.read_next().borrow().clone(),
+                    Constants::UserDefined => object["__userDefined"] = (self.read_chunk()).into(),
                     Constants::UserMarshal => {
-                        object["__userMarshal"] = self.read_next(buffer).borrow().clone()
+                        object["__userMarshal"] = self.read_next().borrow().clone()
                     }
                     _ => unreachable!(),
                 }
@@ -522,7 +524,7 @@ impl Loader {
     }
 }
 
-impl Default for Loader {
+impl<'a> Default for Loader<'a> {
     fn default() -> Self {
         Self::new()
     }
@@ -543,9 +545,9 @@ impl Default for Loader {
 ///
 /// // Serialize bytes to a Value
 /// // If "sonic" feature is enabled, returns sonic_rs::Value, otherwise serde_json::Value
-/// let json: serde_json::Value = load(&bytes);
+/// let json: serde_json::Value = load(&bytes, None);
 /// assert_eq!(json, json!(null));
 /// ```
-pub fn load(buffer: &[u8]) -> Value {
-    Loader::new().load(buffer)
+pub fn load(buffer: &[u8], instance_var_prefix: Option<&str>) -> Value {
+    Loader::new().load(buffer, instance_var_prefix)
 }
