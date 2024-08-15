@@ -228,7 +228,7 @@ impl<'a> Dumper<'a> {
             for (key, value) in object.iter_mut() {
                 cfg_if! {
                     if #[cfg(feature = "sonic")] {
-                        write_symbol(key.into());
+                        self.write_symbol(key.into());
                     } else {
                         self.write_symbol(Value::from(key.as_str()));
                     }
@@ -350,7 +350,7 @@ impl<'a> Dumper<'a> {
                                     self.write_byte(Constants::Class);
                                     self.write_string(value["__name"].take().as_str().unwrap());
                                 }
-                                "module" => write_byte(
+                                "module" => self.write_byte(
                                     if value.get("__old").is_true() {
                                         Constants::ModuleOld
                                     } else {
@@ -396,9 +396,9 @@ impl<'a> Dumper<'a> {
                                             stripped.into()
                                         } else {
                                             key.into()
-                                        }
+                                        };
 
-                                        self.write_structure(key_value)
+                                        self.write_structure(key_value);
                                         self.write_structure(value.take());
                                     }
                                 }
@@ -554,16 +554,15 @@ impl<'a> Dumper<'a> {
                                     self.write_fixnum(entries.len() as i32);
 
                                     for (key, value) in entries {
-                                        if let Some(stripped) = key.strip_prefix("__integer__") {
-                                            self.write_structure(
-                                                stripped.parse::<u16>().unwrap().into(),
-
-                                            );
+                                        let key_value = if let Some(stripped) = key.strip_prefix("__integer__") {
+                                            stripped.parse::<u16>().unwrap().into()
                                         } else if let Some(stripped) = key.strip_prefix("__object__") {
-                                            self.write_structure(stripped.into())
+                                            stripped.into()
                                         } else {
-                                            self.write_structure(key.as_str().into());
-                                        }
+                                            key.as_str().into()
+                                        };
+
+                                        self.write_structure(key_value);
 
                                         self.write_structure(value.take());
                                     }
