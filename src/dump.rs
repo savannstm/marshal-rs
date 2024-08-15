@@ -375,33 +375,33 @@ impl<'a> Dumper<'a> {
 
                                     self.write_byte(options);
                                 }
-                                _ => {
-                                    let object: &mut Object = value.as_object_mut().unwrap();
+                                _ => unreachable!()
+                            }
+                        } else {
+                            let object: &mut Object = value.as_object_mut().unwrap();
 
-                                    self.write_byte(
-                                        if object.get(&DEFAULT_SYMBOL).is_some() {
-                                            Constants::HashDefault
-                                        } else {
-                                            Constants::Hash
-                                        },
-                                    );
+                            self.write_byte(
+                                if object.get(&DEFAULT_SYMBOL).is_some() {
+                                    Constants::HashDefault
+                                } else {
+                                    Constants::Hash
+                                },
+                            );
 
-                                    let entries: sonic_rs::value::object::IterMut = object.iter_mut();
-                                    self.write_fixnum(entries.len() as i32);
+                            let entries: sonic_rs::value::object::IterMut = object.iter_mut();
+                            self.write_fixnum(entries.len() as i32);
 
-                                    for (key, value) in entries {
-                                        let key_value = if let Some(stripped) = key.strip_prefix("__integer__") {
-                                            stripped.parse::<u16>().unwrap().into()
-                                        } else if let Some(stripped) = key.strip_prefix("__object__") {
-                                            stripped.into()
-                                        } else {
-                                            key.into()
-                                        };
+                            for (key, value) in entries {
+                                let key_value = if let Some(stripped) = key.strip_prefix("__integer__") {
+                                    stripped.parse::<u16>().unwrap().into()
+                                } else if let Some(stripped) = key.strip_prefix("__object__") {
+                                    stripped.into()
+                                } else {
+                                    key.into()
+                                };
 
-                                        self.write_structure(key_value);
-                                        self.write_structure(value.take());
-                                    }
-                                }
+                                self.write_structure(key_value);
+                                self.write_structure(value.take());
                             }
                         }
                     }
@@ -473,15 +473,15 @@ impl<'a> Dumper<'a> {
                                         self.write_structure(value["__wrapped"].take());
                                     } else if value.get("__userDefined").is_some() {
                                         let object = value.as_object_mut().unwrap();
-                                        let mut object_len: usize = object.len();
+                                        let mut object_length: usize = object.len();
 
                                         for (key, _) in object {
                                             if key.starts_with("__") {
-                                                object_len -= 1;
+                                                object_length -= 1;
                                             }
                                         }
 
-                                        let has_instance_var: bool = object_len > 0;
+                                        let has_instance_var: bool = object_length > 0;
 
                                         if has_instance_var {
                                             self.write_byte(Constants::InstanceVar);
@@ -538,35 +538,33 @@ impl<'a> Dumper<'a> {
 
                                     self.write_byte(options);
                                 }
-                                _ => {
-                                    let object = value.as_object_mut().unwrap();
+                                _ => unreachable!()
+                            }
+                        } else {
+                            let object = value.as_object_mut().unwrap();
 
-                                    self.write_byte(
-                                        if object.get(DEFAULT_SYMBOL).is_some() {
-                                            Constants::HashDefault
-                                        } else {
-                                            Constants::Hash
-                                        },
+                            self.write_byte(
+                                if object.get(DEFAULT_SYMBOL).is_some() {
+                                    Constants::HashDefault
+                                } else {
+                                    Constants::Hash
+                                },
+                            );
 
-                                    );
+                            let entries = object.iter_mut();
+                            self.write_fixnum(entries.len() as i32);
 
-                                    let entries = object.iter_mut();
-                                    self.write_fixnum(entries.len() as i32);
+                            for (key, value) in entries {
+                                let key_value = if let Some(stripped) = key.strip_prefix("__integer__") {
+                                    stripped.parse::<u16>().unwrap().into()
+                                } else if let Some(stripped) = key.strip_prefix("__object__") {
+                                    stripped.into()
+                                } else {
+                                    key.as_str().into()
+                                };
 
-                                    for (key, value) in entries {
-                                        let key_value = if let Some(stripped) = key.strip_prefix("__integer__") {
-                                            stripped.parse::<u16>().unwrap().into()
-                                        } else if let Some(stripped) = key.strip_prefix("__object__") {
-                                            stripped.into()
-                                        } else {
-                                            key.as_str().into()
-                                        };
-
-                                        self.write_structure(key_value);
-
-                                        self.write_structure(value.take());
-                                    }
-                                }
+                                self.write_structure(key_value);
+                                self.write_structure(value.take());
                             }
                         }
                     }
