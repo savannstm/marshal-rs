@@ -35,10 +35,12 @@ impl<'a> Loader<'a> {
     }
 
     /// Serializes Ruby Marshal byte stream to JSON.
+    ///
+    /// instance_var_prefix argument takes a string, and replaces instance variables' "@" prefixes by this string.
     /// # Panics
-    /// If passed byte stream is of non-4.8 Marshal version (indicated by two first bytes).
-    /// If passed byte stream's data is invalid.
-    /// /// # Example
+    /// * If passed byte stream is of non-4.8 Marshal version (indicated by two first bytes).
+    /// * If passed byte stream's data is invalid.
+    /// # Example
     /// ```rust
     /// use marshal_rs::load::Loader;
     /// use serde_json::{Value, json};
@@ -409,13 +411,14 @@ impl<'a> Loader<'a> {
                     let key: Value = self.read_next().borrow().clone();
                     let value: Value = self.read_next().borrow().clone();
 
-                    let key_str = key.as_str().unwrap();
-
-                    if let Some(str) = key_str.strip_prefix('@') {
-                        object[&(self.instance_var_prefix.unwrap_or("@").to_owned() + str)] = value;
-                    } else {
-                        object[key_str] = value;
-                    }
+                    let key_str: &str = key.as_str().unwrap();
+                    object[key_str
+                        .replacen(
+                            "__symbol__@",
+                            self.instance_var_prefix.unwrap_or("__symbol__@"),
+                            1,
+                        )
+                        .as_str()] = value;
                 }
 
                 let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(object));
@@ -531,10 +534,12 @@ impl<'a> Default for Loader<'a> {
 }
 
 /// Serializes Ruby Marshal byte stream to JSON.
+///
+/// instance_var_prefix argument takes a string, and replaces instance variables' "@" prefixes by this string.
 /// # Panics
-/// If passed byte stream is of non-4.8 Marshal version (indicated by two first bytes).
-/// If passed byte stream's data is invalid.
-/// /// # Example
+/// * If passed byte stream is of non-4.8 Marshal version (indicated by two first bytes).
+/// * If passed byte stream's data is invalid.
+/// # Example
 /// ```rust
 /// use marshal_rs::load::load;
 /// use serde_json::{Value, json};

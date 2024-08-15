@@ -28,7 +28,9 @@ impl<'a> Dumper<'a> {
     }
 
     /// Serializes JSON object to a Marshal byte stream.
-    /// /// # Example
+    ///
+    /// instance_var_prefix argument takes a string, and replaces instance variables' prefixes with Ruby's "@" prefix. It's value must be the same, as in load() function.
+    /// # Example
     /// ```rust
     /// use marshal_rs::dump::Dumper;
     /// use serde_json::{Value, json};
@@ -226,14 +228,10 @@ impl<'a> Dumper<'a> {
 
         if object_length > 0 {
             for (key, value) in object.iter_mut() {
-                cfg_if! {
-                    if #[cfg(feature = "sonic")] {
-                        self.write_symbol(key.into());
-                    } else {
-                        self.write_symbol(Value::from(key.as_str()));
-                    }
-                }
+                let key_string: String =
+                    key.replacen(self.instance_var_prefix.unwrap_or("@"), "@", 1);
 
+                self.write_symbol(key_string.as_str().into());
                 self.write_structure(value.take());
             }
         }
@@ -602,7 +600,9 @@ impl<'a> Default for Dumper<'a> {
 }
 
 /// Serializes JSON object to a Marshal byte stream.
-/// /// # Example
+///
+/// instance_var_prefix argument takes a string, and replaces instance variables' prefixes with Ruby's "@" prefix. It's value must be the same, as in load() function.
+/// # Example
 /// ```rust
 /// use marshal_rs::dump::dump;
 /// use serde_json::{Value, json};
