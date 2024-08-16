@@ -1,6 +1,8 @@
 use crate::{Constants, DEFAULT_SYMBOL, ENCODING_SHORT_SYMBOL, EXTENDS_SYMBOL, MARSHAL_VERSION};
 use cfg_if::cfg_if;
-use std::mem;
+use num_bigint::{BigInt, Sign};
+use num_traits::ToPrimitive;
+use std::{mem, str::FromStr};
 cfg_if! {
     if #[cfg(feature = "sonic")] {
         use sonic_rs::{
@@ -66,56 +68,50 @@ impl<'a> Dumper<'a> {
     }
 
     fn write_bytes(&mut self, bytes: &[u8]) {
-        self.write_fixnum(bytes.len() as i32);
+        self.write_number(bytes.len() as i32);
         self.write_buffer(bytes);
     }
 
-    fn write_fixnum(&mut self, number: i32) {
-        let mut buf: Vec<u8> = vec![0; 5];
-        let end: i8 = self.write_marshal_fixnum(number, &mut buf);
+    fn write_number<T: Into<num_bigint::BigInt>>(&mut self, number: T) {
+        let mut buf: Vec<u8> = vec![0; 16];
+        let bigint: BigInt = number.into();
 
-        self.write_buffer(&buf[0..end as usize]);
-    }
+        if bigint > i64::MAX.into() && bigint < i64::MIN.into() {
+            if bigint == 0.into() {
+                buf[0] = 0;
+            } else if BigInt::from(-128) >= bigint && bigint > 0.into() {
+                let u8: u8 = bigint.to_u8().unwrap();
+                buf[0] = u8 - 5;
+            } else if BigInt::from(0) > bigint && bigint > 128.into() {
+                let u8: u8 = bigint.to_u8().unwrap();
+                buf[0] = u8 + 5;
+            } else {
+                let i64: i64 = bigint.to_i64().unwrap();
+                let bytes = i64.to_le_bytes();
+                buf[0] = bytes.len() as u8;
 
-    fn write_marshal_fixnum(&mut self, mut fixnum: i32, buffer: &mut [u8]) -> i8 {
-        match fixnum {
-            0 => {
-                buffer[0] = 0;
-                1
-            }
-            1..123 => {
-                buffer[0] = (fixnum + 5) as u8;
-                1
-            }
-            -123..0 => {
-                buffer[0] = ((fixnum - 5) & 0xff) as u8;
-                1
-            }
-            _ => {
-                let mut i: i8 = 1;
-
-                while i < 5 {
-                    buffer[i as usize] = (fixnum & 0xff) as u8;
-                    fixnum >>= 8;
-
-                    match fixnum {
-                        0 => {
-                            buffer[0] = i as u8;
-                            break;
-                        }
-                        -1 => {
-                            buffer[0] = -i as u8;
-                            break;
-                        }
-                        _ => {}
-                    }
-
-                    i += 1;
+                for (i, byte) in bytes.into_iter().enumerate() {
+                    buf[i + 1] = byte;
                 }
+            }
+        } else {
+            let (sign, bytes) = bigint.to_bytes_le();
 
-                i + 1
+            self.write_byte(Constants::Bignum);
+            self.write_byte(if sign == Sign::Plus {
+                Constants::Positive
+            } else {
+                Constants::Negative
+            });
+
+            buf[0] = bytes.len() as u8;
+
+            for (i, byte) in bytes.into_iter().enumerate() {
+                buf[i + 1] = byte;
             }
         }
+
+        self.write_buffer(&buf);
     }
 
     fn write_string(&mut self, string: &str) {
@@ -145,7 +141,7 @@ impl<'a> Dumper<'a> {
 
         if let Some(pos) = self.symbols.iter().position(|sym: &Value| sym == &symbol) {
             self.write_byte(Constants::Symlink);
-            self.write_fixnum(pos as i32);
+            self.write_number(pos as i32);
         } else {
             self.write_byte(Constants::Symbol);
             self.write_bytes(symbol.as_str().unwrap().as_bytes());
@@ -224,7 +220,7 @@ impl<'a> Dumper<'a> {
 
         let object_length: usize = object.len();
 
-        self.write_fixnum(object_length as i32);
+        self.write_number(object_length as i32);
 
         if object_length > 0 {
             for (key, value) in object.iter_mut() {
@@ -261,7 +257,7 @@ impl<'a> Dumper<'a> {
             buf.push(0);
         }
 
-        self.write_fixnum(buf.len() as i32 >> 1);
+        self.write_number(buf.len() as i32 >> 1);
         self.write_buffer(&buf);
     }
 
@@ -373,6 +369,10 @@ impl<'a> Dumper<'a> {
 
                                     self.write_byte(options);
                                 }
+                                "bigint" => {
+                                    let bigint = BigInt::from(value["value"]);
+                                    self.write_number(bigint);
+                                }
                                 _ => unreachable!()
                             }
                         } else {
@@ -444,7 +444,7 @@ impl<'a> Dumper<'a> {
                         if let Some(integer) = number.as_i64() {
                             if (-0x40_000_000..0x40_000_000).contains(&integer) {
                                 self.write_byte(Constants::Fixnum);
-                                self.write_fixnum(integer as i32);
+                                self.write_number(integer as i32);
                             } else {
                                 self.write_bignum(integer);
                             }
@@ -536,6 +536,10 @@ impl<'a> Dumper<'a> {
 
                                     self.write_byte(options);
                                 }
+                                "bigint" => {
+                                    let bigint = BigInt::from_str(value["value"].as_str().unwrap()).unwrap();
+                                    self.write_number(bigint);
+                                }
                                 _ => unreachable!()
                             }
                         } else {
@@ -550,7 +554,7 @@ impl<'a> Dumper<'a> {
                             );
 
                             let entries = object.iter_mut();
-                            self.write_fixnum(entries.len() as i32);
+                            self.write_number(entries.len() as i32);
 
                             for (key, value) in entries {
                                 let key_value = if let Some(stripped) = key.strip_prefix("__integer__") {
@@ -569,7 +573,7 @@ impl<'a> Dumper<'a> {
                     Value::Array(_) => {
                         let array = value.as_array_mut().unwrap();
                         self.write_byte(Constants::Array);
-                        self.write_fixnum(array.len() as i32);
+                        self.write_number(array.len() as i32);
 
                         for element in array {
                             self.write_structure(element.take());
@@ -582,7 +586,7 @@ impl<'a> Dumper<'a> {
                             self.write_byte(Constants::InstanceVar);
                             self.write_byte(Constants::String);
                             self.write_string(string.as_str());
-                            self.write_fixnum(1);
+                            self.write_number(1);
                             self.write_symbol(ENCODING_SHORT_SYMBOL.into());
                             self.write_byte(Constants::True);
                         }

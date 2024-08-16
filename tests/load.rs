@@ -1,7 +1,9 @@
 #![allow(clippy::approx_constant)]
 use core::str;
 use marshal_rs::load::load;
+use num_bigint::{BigInt, BigUint};
 use serde_json::{from_value, json};
+use std::str::FromStr;
 
 #[test]
 #[should_panic(expected = "Incompatible Marshal file format or version.")]
@@ -50,6 +52,28 @@ fn fixnum_negative() {
         load(&[0x04, 0x08, 0x69, 0xFD, 0x90, 0xEE, 0xFE], None),
         json!(-70000)
     );
+}
+
+#[test]
+fn bignum_positive() {
+    assert_eq!(
+        load(
+            b"\x04\x08l+\n\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00",
+            None
+        ),
+        json!({"__type": "bigint", "value": BigInt::from_str("36893488147419103232").unwrap().to_string()})
+    );
+}
+
+#[test]
+fn bignum_negative() {
+    assert_eq!(
+        load(
+            b"\x04\x08l-\n\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00",
+            None
+        ),
+        json!({"__type": "bigint", "value": BigInt::from_str("-36893488147419103232").unwrap().to_string()})
+    )
 }
 
 #[test]

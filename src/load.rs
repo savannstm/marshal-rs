@@ -4,6 +4,7 @@ use crate::{
 };
 use cfg_if::cfg_if;
 use encoding_rs::{Encoding, UTF_8};
+use num_bigint::BigInt;
 use std::{cell::RefCell, mem::transmute, rc::Rc};
 cfg_if! {
     if #[cfg(feature = "sonic")] {
@@ -113,19 +114,13 @@ impl<'a> Loader<'a> {
             // These values mark the length of fixnum in bytes
             -4..=4 => {
                 let absolute: i8 = fixnum_length.abs();
-                let scaled: i32 = (4 - absolute as i32) * 8;
                 let bytes: &[u8] = self.read_bytes(absolute as usize);
-                let mut result: i32 = 0;
+                let mut buffer = [if fixnum_length < 0 { 255u8 } else { 0u8 }; 4];
 
-                for i in (0..absolute as usize).rev() {
-                    result = (result << 8) | bytes[i] as i32;
-                }
+                let len = bytes.len().min(4);
+                buffer[..len].copy_from_slice(&bytes[..len]);
 
-                if fixnum_length > 0 {
-                    result
-                } else {
-                    (result << scaled) >> scaled
-                }
+                i32::from_le_bytes(buffer)
             }
             // Otherwise fixnum is a single byte and we read it
             _ => {
@@ -147,21 +142,20 @@ impl<'a> Loader<'a> {
         String::from_utf8_lossy(self.read_chunk()).to_string()
     }
 
-    fn read_bignum(&mut self) -> i64 {
+    fn read_bignum(&mut self) -> Value {
         let sign: u8 = self.read_byte();
-        let doubled: i32 = self.read_fixnum() << 1;
-        let bytes: &[u8] = self.read_bytes(doubled as usize);
-        let mut result: i64 = 0;
+        let length: i32 = self.read_fixnum() << 1;
+        let bytes: &[u8] = self.read_bytes(length as usize);
+        let result: BigInt = BigInt::from_bytes_le(
+            if sign == Constants::Positive {
+                num_bigint::Sign::Plus
+            } else {
+                num_bigint::Sign::Minus
+            },
+            bytes,
+        );
 
-        for (i, &byte) in bytes.iter().enumerate().take(doubled as usize) {
-            result += (byte as i64 * 2).pow((i << 3) as u32);
-        }
-
-        if sign == Constants::Positive {
-            result
-        } else {
-            -result
-        }
+        json!({"__type": "bigint", "value": result.to_string()})
     }
 
     fn parse_float(&mut self, string: &str) -> Option<f64> {
@@ -333,9 +327,9 @@ impl<'a> Loader<'a> {
                 rc
             }
             Constants::Bignum => {
-                let bignum: i64 = self.read_bignum();
+                let bignum: Value = self.read_bignum();
 
-                let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(Value::from(bignum)));
+                let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(bignum));
                 self.objects.push(rc.clone());
                 rc
             }

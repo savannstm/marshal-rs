@@ -10,5 +10,7 @@ default = ["dep:serde_json"]
 [dependencies]
 cfg-if = "1.0.0"
 encoding_rs = "0.8.34"
+num-bigint = "0.4.6"
+num-traits = "0.2.19"
 serde_json = { version = "1.0.121", optional = true, features = ["preserve_order"] }
 sonic-rs = { version = "0.3.9", optional = true }
