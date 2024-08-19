@@ -2,6 +2,12 @@
 name = "marshal-rs"
 version = "0.1.0"
 edition = "2021"
+authors = ["savannstm <savannstm@gmail.com>"]
+description = "Blazingly fast Ruby-lang's Marshal implementation in Rust."
+readme = "README.md"
+license-file = "LICENSE.md"
+keywords = ["marshal", "ruby", "serialize", "deserialize"]
+rust-version = "1.63.0"
 
 [features]
 sonic = ["dep:sonic-rs"]
@@ -11,6 +17,8 @@ default = ["dep:serde_json"]
 cfg-if = "1.0.0"
 encoding_rs = "0.8.34"
 num-bigint = "0.4.6"
-num-traits = "0.2.19"
 serde_json = { version = "1.0.121", optional = true, features = ["preserve_order"] }
 sonic-rs = { version = "0.3.9", optional = true }
+
+[dev-dependencies]
+rayon = "1.10.0"

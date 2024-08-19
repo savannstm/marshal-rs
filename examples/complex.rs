@@ -1,5 +1,12 @@
+use cfg_if::cfg_if;
 use marshal_rs::{dump::Dumper, load::Loader};
-use serde_json::json;
+cfg_if! {
+    if #[cfg(feature = "sonic")] {
+        use sonic_rs::json;
+    } else {
+        use serde_json::json;
+    }
+}
 
 fn main() {
     // Bytes slice of Ruby Marshal data
@@ -12,9 +19,9 @@ fn main() {
     let mut loader: Loader = Loader::new();
 
     // Load the values of multiple objects
-    let null_value: serde_json::Value = loader.load(&null, None);
-    let true_value: serde_json::Value = loader.load(&true_, None);
-    let false_value: serde_json::Value = loader.load(&false_, None);
+    let null_value = loader.load(&null, None, None);
+    let true_value = loader.load(&true_, None, None);
+    let false_value = loader.load(&false_, None, None);
 
     assert_eq!(null_value, json!(null));
     assert_eq!(true_value, json!(true));

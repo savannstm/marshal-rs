@@ -1,8 +1,11 @@
+//! Utilities for serializing Marshal byte streams to JSON.
+
 use crate::{
     Constants, DEFAULT_SYMBOL, ENCODING_LONG_SYMBOL, ENCODING_SHORT_SYMBOL, EXTENDS_SYMBOL,
     MARSHAL_VERSION,
 };
 use cfg_if::cfg_if;
+use core::str;
 use encoding_rs::{Encoding, UTF_8};
 use num_bigint::BigInt;
 use std::{cell::RefCell, mem::transmute, rc::Rc};
@@ -16,12 +19,19 @@ cfg_if! {
     }
 }
 
+#[derive(PartialEq, Clone)]
+pub enum StringMode {
+    UTF8,
+    Binary,
+}
+
 pub struct Loader<'a> {
     buffer: &'a [u8],
     byte_position: usize,
     symbols: Vec<Rc<RefCell<Value>>>,
     objects: Vec<Rc<RefCell<Value>>>,
     instance_var_prefix: Option<&'a str>,
+    string_mode: Option<StringMode>,
 }
 
 impl<'a> Loader<'a> {
@@ -32,6 +42,7 @@ impl<'a> Loader<'a> {
             symbols: Vec::new(),
             objects: Vec::new(),
             instance_var_prefix: None,
+            string_mode: None,
         }
     }
 
@@ -44,7 +55,7 @@ impl<'a> Loader<'a> {
     /// # Example
     /// ```rust
     /// use marshal_rs::load::Loader;
-    /// use serde_json::{Value, json};
+    /// use serde_json::json;
     ///
     /// // Bytes slice of Ruby Marshal data
     /// // Files with Marshal data can be read with std::fs::read()
@@ -55,11 +66,17 @@ impl<'a> Loader<'a> {
     ///
     /// // Serialize bytes to a Value
     /// // If "sonic" feature is enabled, returns sonic_rs::Value, otherwise serde_json::Value
-    /// let json: serde_json::Value = loader.load(&bytes, None);
+    /// let json = loader.load(&bytes, None, None);
     /// assert_eq!(json, json!(null));
     /// ```
-    pub fn load(&mut self, buffer: &'a [u8], instance_var_prefix: Option<&'a str>) -> Value {
+    pub fn load(
+        &mut self,
+        buffer: &'a [u8],
+        string_mode: Option<StringMode>,
+        instance_var_prefix: Option<&'a str>,
+    ) -> Value {
         self.buffer = buffer;
+        self.string_mode = string_mode;
         self.instance_var_prefix = instance_var_prefix;
 
         let marshal_version: u16 = u16::from_be_bytes(
@@ -130,6 +147,28 @@ impl<'a> Loader<'a> {
                     (fixnum_length + 5) as i32
                 }
             }
+        }
+    }
+
+    fn get_link_pos(&mut self) -> i32 {
+        let fixnum_length: i32 = self.read_byte() as i32;
+
+        match fixnum_length {
+            // Fixnum is zero
+            0 => 0,
+            // These values mark the length of fixnum in bytes
+            1..=4 => {
+                let absolute: i8 = fixnum_length.abs() as i8;
+                let bytes: &[u8] = self.read_bytes(absolute as usize);
+                let mut buffer: [u8; 4] = [0; 4];
+
+                let len: usize = bytes.len().min(4);
+                buffer[..len].copy_from_slice(&bytes[..len]);
+
+                i32::from_le_bytes(buffer) - 4
+            }
+            // Otherwise fixnum is a single byte and we read it
+            _ => fixnum_length - 5,
         }
     }
 
@@ -216,16 +255,18 @@ impl<'a> Loader<'a> {
             Constants::False => Rc::from(RefCell::from(json!(false))),
             Constants::Fixnum => Rc::from(RefCell::from(json!(self.read_fixnum()))),
             Constants::Symbol => {
+                let prefix: String = String::from("__symbol__");
+                let symbol: &String = &self.read_string();
+
                 cfg_if! {
                     if #[cfg(feature = "sonic")] {
-                        let symbol: Value = (&("__symbol__".to_owned() + &self.read_string())).into();
+                        let symbol: Value = ((prefix + symbol).as_str()).into();
                     } else {
-                        let symbol: Value = ("__symbol__".to_owned() + &self.read_string()).into();
+                        let symbol: Value = (prefix + symbol).into();
                     }
                 }
 
                 let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(symbol));
-
                 self.symbols.push(rc.clone());
                 rc
             }
@@ -234,11 +275,8 @@ impl<'a> Loader<'a> {
                 self.symbols[pos as usize].clone()
             }
             Constants::Link => {
-                let pos: i32 = self.read_fixnum();
-                self.objects
-                    .get(pos as usize)
-                    .unwrap_or(&Rc::from(RefCell::from(json!(null))))
-                    .clone()
+                let pos: i32 = self.get_link_pos();
+                self.objects[pos as usize].clone()
             }
             Constants::InstanceVar => {
                 let object: Rc<RefCell<Value>> = self.read_next();
@@ -246,43 +284,43 @@ impl<'a> Loader<'a> {
 
                 for _ in 0..size {
                     let key: Rc<RefCell<Value>> = self.read_next();
+                    let mut value: Option<Vec<u8>> = None;
 
-                    cfg_if! {
-                        if #[cfg(feature = "sonic")] {
-                            let value: Vec<u8> = from_value(&self.read_next().borrow()).unwrap_or_default();
-                        } else {
-                            let value: Vec<u8> = from_value(self.read_next().take()).unwrap_or_default();
+                    if let Some(data) = self.read_next().borrow_mut().get_mut("data") {
+                        cfg_if! {
+                            if #[cfg(feature = "sonic")] {
+                                value = from_value(data).unwrap();
+                            } else {
+                                value = from_value(data.take()).unwrap();
+                            }
                         }
                     }
 
-                    if object.borrow().is_array()
+                    if (object.borrow()["__type"].as_str().unwrap() == "bytes")
                         && [
                             Value::from(ENCODING_LONG_SYMBOL),
                             Value::from(ENCODING_SHORT_SYMBOL),
                         ]
                         .contains(&key.borrow())
+                        && self.string_mode != Some(StringMode::Binary)
                     {
+                        let bytes: Value = object.borrow_mut()["data"].take();
+
                         cfg_if! {
                             if #[cfg(feature = "sonic")] {
-                                let array: Vec<u8> = from_value(&object.borrow()).unwrap();
+                                let array: Vec<u8> = from_value(&bytes).unwrap();
                             } else {
-                                let array: Vec<u8> = from_value(object.take()).unwrap();
+                                let array: Vec<u8> = from_value(bytes).unwrap();
                             }
                         }
 
                         if *key.borrow() == ENCODING_SHORT_SYMBOL {
-                            cfg_if! {
-                                if #[cfg(feature = "sonic")] {
-                                    *object.borrow_mut() =
-                                        (&unsafe { String::from_utf8_unchecked(array)  }).into();
-                                } else {
-                                    *object.borrow_mut() =
-                                        (unsafe { String::from_utf8_unchecked(array) }).into();
-                                }
-                            }
+                            *object.borrow_mut() =
+                                (unsafe { str::from_utf8_unchecked(&array) }).into();
                         } else {
-                            let (cow, _, _) =
-                                Encoding::for_label(&value).unwrap_or(UTF_8).decode(&array);
+                            let (cow, _, _) = Encoding::for_label(&value.unwrap())
+                                .unwrap_or(UTF_8)
+                                .decode(&array);
 
                             cfg_if! {
                                 if #[cfg(feature = "sonic")] {
@@ -291,9 +329,9 @@ impl<'a> Loader<'a> {
                                     *object.borrow_mut() = (cow.to_string()).into();
                                 }
                             }
-                        }
 
-                        *self.objects.last_mut().unwrap() = object.clone();
+                            *self.objects.last_mut().unwrap() = object.clone()
+                        }
                     }
                 }
 
@@ -353,19 +391,13 @@ impl<'a> Loader<'a> {
             }
             Constants::Float => {
                 let float: Option<f64> = self.read_float();
-                let rc: Rc<RefCell<Value>> = match float {
-                    Some(value) => {
-                        if value == 0f64 {
-                            Rc::from(RefCell::from(Value::from(0)))
-                        } else {
-                            Rc::from(RefCell::from(json!(value)))
-                        }
-                    }
+                let object = match float {
+                    Some(value) => Rc::from(RefCell::from(json!(value))),
                     None => Rc::from(RefCell::from(json!(null))),
                 };
 
-                self.objects.push(rc.clone());
-                rc
+                self.objects.push(object.clone());
+                object
             }
             Constants::Hash | Constants::HashDefault => {
                 let hash_size: i32 = self.read_fixnum();
@@ -375,19 +407,25 @@ impl<'a> Loader<'a> {
                     let key: Rc<RefCell<Value>> = self.read_next();
                     let value: Rc<RefCell<Value>> = self.read_next();
 
-                    let key: String = if let Some(key) = key.borrow().as_number() {
+                    let key: String = if let Some(key) = key.borrow().as_i64() {
                         "__integer__".to_string() + &to_string(&key).unwrap()
+                    } else if let Some(key) = key.borrow().as_f64() {
+                        "__float__".to_string() + &to_string(&key).unwrap()
+                    } else if let Some(key) = key.borrow().as_array() {
+                        "__array__".to_string() + &to_string(key).unwrap()
                     } else if let Some(key) = key.borrow().as_object() {
                         "__object__".to_string() + &to_string(&key).unwrap()
+                    } else if let Some(key) = key.borrow().as_str() {
+                        key.to_string()
                     } else {
-                        to_string(&*key.borrow()).unwrap()
+                        panic!()
                     };
 
                     hash[&key] = value.borrow().clone();
                 }
 
                 if structure_type == Constants::HashDefault {
-                    hash[DEFAULT_SYMBOL] = self.read_next().take();
+                    hash[DEFAULT_SYMBOL] = self.read_next().borrow().clone();
                 }
 
                 let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(hash));
@@ -427,15 +465,26 @@ impl<'a> Loader<'a> {
                 rc
             }
             Constants::String => {
-                let string_bytes: Value = self.read_chunk().into();
-                let object: Value = json!({ "__type": "bytes", "data": string_bytes });
+                let string_mode: Option<StringMode> = self.string_mode.clone();
+                let string_bytes: &[u8] = self.read_chunk();
+
+                let object: Value = if string_mode == Some(StringMode::UTF8) {
+                    if let Ok(string) = str::from_utf8(string_bytes) {
+                        string.into()
+                    } else {
+                        json!({ "__type": "bytes", "data": json!(string_bytes) })
+                    }
+                } else {
+                    json!({ "__type": "bytes", "data": json!(string_bytes) })
+                };
 
                 let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(object));
                 self.objects.push(rc.clone());
                 rc
             }
             Constants::Struct => {
-                let struct_class = self.read_next();
+                let struct_class: Rc<RefCell<Value>> = self.read_next();
+
                 cfg_if! {
                     if #[cfg(feature = "sonic")] {
                         let mut ruby_struct: Value =
@@ -470,12 +519,11 @@ impl<'a> Loader<'a> {
                         }
 
                         key_string = String::from_utf8(buffer).unwrap()
-                    } else if key["__type"]
-                        .as_str()
-                        .is_some_and(|_type: &str| _type == "object")
-                    {
-                        key_string += "__object__";
-                        key_string += &to_string(&key).unwrap();
+                    } else if let Some(type_) = key["__type"].as_str() {
+                        if type_ == "object" {
+                            key_string += "__object__";
+                            key_string += &to_string(&key).unwrap();
+                        }
                     }
 
                     hash[&key_string] = value;
@@ -544,9 +592,13 @@ impl<'a> Default for Loader<'a> {
 ///
 /// // Serialize bytes to a Value
 /// // If "sonic" feature is enabled, returns sonic_rs::Value, otherwise serde_json::Value
-/// let json: serde_json::Value = load(&bytes, None);
+/// let json: serde_json::Value = load(&bytes, None, None);
 /// assert_eq!(json, json!(null));
 /// ```
-pub fn load(buffer: &[u8], instance_var_prefix: Option<&str>) -> Value {
-    Loader::new().load(buffer, instance_var_prefix)
+pub fn load(
+    buffer: &[u8],
+    string_mode: Option<StringMode>,
+    instance_var_prefix: Option<&str>,
+) -> Value {
+    Loader::new().load(buffer, string_mode, instance_var_prefix)
 }

@@ -1,16 +1,17 @@
+//! Utilities to serialize JSON objects back to Marshal byte streams.
+
 use crate::{Constants, DEFAULT_SYMBOL, ENCODING_SHORT_SYMBOL, EXTENDS_SYMBOL, MARSHAL_VERSION};
 use cfg_if::cfg_if;
 use num_bigint::{BigInt, Sign};
-use num_traits::ToPrimitive;
 use std::{mem, str::FromStr};
 cfg_if! {
     if #[cfg(feature = "sonic")] {
         use sonic_rs::{
             from_value, Array, JsonContainerTrait, JsonType, JsonValueMutTrait, JsonValueTrait, Object,
-            Value,
+            Value, from_str, Array
         };
     } else {
-        use serde_json::{from_value, Value};
+        use serde_json::{from_value, Value, from_str};
     }
 }
 
@@ -41,7 +42,7 @@ impl<'a> Dumper<'a> {
     /// let mut dumper = Dumper::new();
     ///
     /// // Value of null
-    /// let json: serde_json::Value = json!(null); // null
+    /// let json = json!(null); // null
     ///
     /// // Serialize Value to bytes
     /// let bytes: Vec<u8> = dumper.dump(json, None);
@@ -59,8 +60,8 @@ impl<'a> Dumper<'a> {
         mem::take(&mut self.buffer)
     }
 
-    fn write_byte(&mut self, byte: Constants) {
-        self.buffer.push(byte as u8);
+    fn write_byte(&mut self, byte: u8) {
+        self.buffer.push(byte);
     }
 
     fn write_buffer(&mut self, bytes: &[u8]) {
@@ -72,43 +73,47 @@ impl<'a> Dumper<'a> {
         self.write_buffer(bytes);
     }
 
-    fn write_number<T: Into<num_bigint::BigInt>>(&mut self, number: T) {
-        let mut buf: Vec<u8> = vec![0; 16];
-        let bigint: BigInt = number.into();
+    fn write_bignum(&mut self, bignum: BigInt) {
+        let (sign, mut bytes) = bignum.to_bytes_le();
 
-        if bigint > i64::MAX.into() && bigint < i64::MIN.into() {
-            if bigint == 0.into() {
-                buf[0] = 0;
-            } else if BigInt::from(-128) >= bigint && bigint > 0.into() {
-                let u8: u8 = bigint.to_u8().unwrap();
-                buf[0] = u8 - 5;
-            } else if BigInt::from(0) > bigint && bigint > 128.into() {
-                let u8: u8 = bigint.to_u8().unwrap();
-                buf[0] = u8 + 5;
-            } else {
-                let i64: i64 = bigint.to_i64().unwrap();
-                let bytes = i64.to_le_bytes();
-                buf[0] = bytes.len() as u8;
-
-                for (i, byte) in bytes.into_iter().enumerate() {
-                    buf[i + 1] = byte;
-                }
-            }
+        self.write_byte(Constants::Bignum as u8);
+        self.write_byte(if sign == Sign::Plus {
+            Constants::Positive as u8
         } else {
-            let (sign, bytes) = bigint.to_bytes_le();
+            Constants::Negative as u8
+        });
 
-            self.write_byte(Constants::Bignum);
-            self.write_byte(if sign == Sign::Plus {
-                Constants::Positive
-            } else {
-                Constants::Negative
-            });
+        bytes[0] = 0;
+        bytes.push(0);
 
-            buf[0] = bytes.len() as u8;
+        self.write_byte(bytes.len() as u8);
+        self.write_buffer(&bytes);
+    }
 
-            for (i, byte) in bytes.into_iter().enumerate() {
-                buf[i + 1] = byte;
+    fn write_number(&mut self, number: i32) {
+        let mut buf: Vec<u8> = Vec::with_capacity(5);
+
+        match number {
+            0 => buf.push(0),
+            1..=122 => buf.push(number as u8 + 5),
+            -123..=-1 => buf.push(number as u8 - 5),
+            -256..=255 => {
+                buf.push(1);
+                buf.push(number as u8);
             }
+            -65535..=65534 => {
+                buf.push(if number < 0 { 254 } else { 2 });
+                buf.extend(&(number as i16).to_le_bytes());
+            }
+            -16777216..=16777215 => {
+                buf.push(if number < 0 { 253 } else { 3 });
+                buf.extend(&number.to_le_bytes()[0..3]);
+            }
+            -1073741824..=1073741823 => {
+                buf.push(if number < 0 { 252 } else { 4 });
+                buf.extend(&number.to_le_bytes()[0..4]);
+            }
+            _ => {}
         }
 
         self.write_buffer(&buf);
@@ -140,10 +145,10 @@ impl<'a> Dumper<'a> {
         }
 
         if let Some(pos) = self.symbols.iter().position(|sym: &Value| sym == &symbol) {
-            self.write_byte(Constants::Symlink);
+            self.write_byte(Constants::Symlink as u8);
             self.write_number(pos as i32);
         } else {
-            self.write_byte(Constants::Symbol);
+            self.write_byte(Constants::Symbol as u8);
             self.write_bytes(symbol.as_str().unwrap().as_bytes());
             self.symbols.push(symbol);
         }
@@ -151,7 +156,7 @@ impl<'a> Dumper<'a> {
 
     fn write_extended(&mut self, extended: Vec<Value>) {
         for symbol in extended {
-            self.write_byte(Constants::Extended);
+            self.write_byte(Constants::Extended as u8);
             self.write_symbol(symbol);
         }
     }
@@ -171,7 +176,7 @@ impl<'a> Dumper<'a> {
             }
         }
 
-        self.write_byte(data_type);
+        self.write_byte(data_type as u8);
         self.write_symbol(object["__class"].take());
     }
 
@@ -193,7 +198,7 @@ impl<'a> Dumper<'a> {
         }
 
         if !object["__wrapped"].is_null() {
-            self.write_byte(Constants::UserClass);
+            self.write_byte(Constants::UserClass as u8);
             self.write_symbol(object["__class"].take())
         }
     }
@@ -213,13 +218,12 @@ impl<'a> Dumper<'a> {
                 if #[cfg(feature = "sonic")] {
                     object.remove(&key);
                 } else {
-                    object.remove(key);
+                    object.shift_remove(key);
                 }
             }
         }
 
         let object_length: usize = object.len();
-
         self.write_number(object_length as i32);
 
         if object_length > 0 {
@@ -233,58 +237,26 @@ impl<'a> Dumper<'a> {
         }
     }
 
-    fn write_bignum(&mut self, mut bignum: i64) {
-        self.write_byte(Constants::Bignum);
-        self.write_byte(if bignum < 0 {
-            Constants::Negative
-        } else {
-            Constants::Positive
-        });
-
-        let mut buf: Vec<u8> = Vec::new();
-        bignum = bignum.abs();
-
-        loop {
-            buf.push((bignum & 0xff) as u8);
-            bignum /= 256;
-
-            if bignum == 0 {
-                break;
-            }
-        }
-
-        if buf.len() & 1 != 0 {
-            buf.push(0);
-        }
-
-        self.write_number(buf.len() as i32 >> 1);
-        self.write_buffer(&buf);
-    }
-
     fn write_structure(&mut self, mut value: Value) {
         cfg_if! {
             if #[cfg(feature = "sonic")] {
                 match value.get_type() {
-                    JsonType::Null =>self.write_byte(Constants::Nil),
+                    JsonType::Null => self.write_byte(Constants::Nil as u8),
                     JsonType::Boolean => {
                         self.write_byte(
                             if value.is_true() {
-                                Constants::True
+                                Constants::True as u8
                             } else {
-                                Constants::False
+                                Constants::False as u8
                             },
                         );
                     }
                     JsonType::Number => {
                         if let Some(integer) = value.as_i64() {
-                            if (-0x40_000_000..0x40_000_000).contains(&integer) {
-                                self.write_byte(Constants::Fixnum);
-                                self.write_fixnum(integer as i32);
-                            } else {
-                                self.write_bignum(integer);
-                            }
+                            self.write_byte(Constants::Fixnum as u8);
+                            self.write_number(integer as i32);
                         } else if let Some(float) = value.as_f64() {
-                            self.write_byte(Constants::Float);
+                            self.write_byte(Constants::Float as u8);
                             self.write_float(float);
                         }
                     }
@@ -294,7 +266,7 @@ impl<'a> Dumper<'a> {
                                 "bytes" => {
                                     let buf: Vec<u8> = from_value(&value["data"]).unwrap();
 
-                                    self.write_byte(Constants::String);
+                                    self.write_byte(Constants::String as u8);
                                     self.write_bytes(&buf);
                                 }
                                 "object" => {
@@ -317,7 +289,7 @@ impl<'a> Dumper<'a> {
                                         let has_instance_var: bool = object_len > 0;
 
                                         if has_instance_var {
-                                            self.write_byte(Constants::InstanceVar);
+                                            self.write_byte(Constants::InstanceVar as u8);
                                         }
 
                                         self.write_class(Constants::UserDefined, &mut value);
@@ -341,18 +313,18 @@ impl<'a> Dumper<'a> {
                                     self.write_instance_var(value["__members"].take());
                                 }
                                 "class" => {
-                                    self.write_byte(Constants::Class);
+                                    self.write_byte(Constants::Class as u8);
                                     self.write_string(value["__name"].take().as_str().unwrap());
                                 }
                                 "module" => self.write_byte(
                                     if value.get("__old").is_true() {
-                                        Constants::ModuleOld
+                                        Constants::ModuleOld as u8
                                     } else {
-                                        Constants::Module
+                                        Constants::Module as u8
                                     },
                                 ),
                                 "regexp" => {
-                                    self.write_byte(Constants::Regexp);
+                                    self.write_byte(Constants::Regexp as u8);
                                     self.write_string(value["expression"].as_str().unwrap());
 
                                     let flags = value["flags"].as_str().unwrap();
@@ -367,33 +339,49 @@ impl<'a> Dumper<'a> {
                                         Constants::RegexpNone
                                     };
 
-                                    self.write_byte(options);
+                                    self.write_byte(options as u8);
                                 }
                                 "bigint" => {
-                                    let bigint = BigInt::from(value["value"]);
-                                    self.write_number(bigint);
+                                    let bigint = BigInt::from_str(value["value"].as_str().unwrap()).unwrap();
+                                    self.write_bignum(bigint);
                                 }
                                 _ => unreachable!()
                             }
                         } else {
                             let object: &mut Object = value.as_object_mut().unwrap();
+                            let default_value: Option<Value> = object.get_mut(&DEFAULT_SYMBOL).map(|default_value| default_value.take());
+                            let hash_type = if default_value.is_some() {
+                                Constants::HashDefault
+                            } else {
+                                Constants::Hash
+                            };
 
-                            self.write_byte(
-                                if object.get(&DEFAULT_SYMBOL).is_some() {
-                                    Constants::HashDefault
-                                } else {
-                                    Constants::Hash
-                                },
-                            );
+                            self.write_byte(hash_type as u8);
 
-                            let entries: sonic_rs::value::object::IterMut = object.iter_mut();
-                            self.write_fixnum(entries.len() as i32);
+                            for key in [
+                                "__class",
+                                "__type",
+                                "__data",
+                                "__wrapped",
+                                "__userDefined",
+                                "__userMarshal",
+                                DEFAULT_SYMBOL,
+                            ] {
+                                object.remove(&key);
+                            }
+
+                            let entries = object.iter_mut();
+                            self.write_number(entries.len() as i32);
 
                             for (key, value) in entries {
                                 let key_value = if let Some(stripped) = key.strip_prefix("__integer__") {
-                                    stripped.parse::<u16>().unwrap().into()
+                                    stripped.parse::<u64>().unwrap().into()
+                                } else if let Some(stripped) = key.strip_prefix("__float__") {
+                                    stripped.parse::<f64>().unwrap().into()
+                                } else if let Some(stripped) = key.strip_prefix("__array__") {
+                                    from_str(stripped).unwrap()
                                 } else if let Some(stripped) = key.strip_prefix("__object__") {
-                                    stripped.into()
+                                    from_str(stripped).unwrap()
                                 } else {
                                     key.into()
                                 };
@@ -401,12 +389,16 @@ impl<'a> Dumper<'a> {
                                 self.write_structure(key_value);
                                 self.write_structure(value.take());
                             }
+
+                            if let Some(default_value) = default_value {
+                                self.write_structure(default_value);
+                            }
                         }
                     }
                     JsonType::Array => {
                         let array: &mut Array = value.as_array_mut().unwrap();
-                        self.write_byte(Constants::Array);
-                        self.write_fixnum(array.len() as i32);
+                        self.write_byte(Constants::Array as u8);
+                        self.write_number(array.len() as i32);
 
                         for element in array {
                             self.write_structure(element.take());
@@ -418,38 +410,34 @@ impl<'a> Dumper<'a> {
                         if string.starts_with("__symbol__") {
                             self.write_symbol(string.into());
                         } else {
-                            self.write_byte(Constants::InstanceVar);
-                            self.write_byte(Constants::String);
+                            self.write_byte(Constants::InstanceVar as u8);
+                            self.write_byte(Constants::String as u8);
                             self.write_string(string);
-                            self.write_fixnum(1);
+                            self.write_number(1);
                             self.write_symbol(ENCODING_SHORT_SYMBOL.into());
-                            self.write_byte(Constants::True);
+                            self.write_byte(Constants::True as u8);
                         }
                     }
                 }
             } else {
                 match value {
-                    Value::Null =>self.write_byte(Constants::Nil),
+                    Value::Null =>self.write_byte(Constants::Nil as u8),
                     Value::Bool(bool) => {
                         self.write_byte(
                             if bool {
-                                Constants::True
+                                Constants::True as u8
                             } else {
-                                Constants::False
+                                Constants::False as u8
                             },
 
                         );
                     }
                     Value::Number(number) => {
                         if let Some(integer) = number.as_i64() {
-                            if (-0x40_000_000..0x40_000_000).contains(&integer) {
-                                self.write_byte(Constants::Fixnum);
-                                self.write_number(integer as i32);
-                            } else {
-                                self.write_bignum(integer);
-                            }
+                            self.write_byte(Constants::Fixnum as u8);
+                            self.write_number(integer as i32);
                         } else if let Some(float) = number.as_f64() {
-                            self.write_byte(Constants::Float);
+                            self.write_byte(Constants::Float as u8);
                             self.write_float(float);
                         }
                     }
@@ -459,7 +447,7 @@ impl<'a> Dumper<'a> {
                                 "bytes" => {
                                     let buf: Vec<u8> = from_value(value["data"].take()).unwrap();
 
-                                    self.write_byte(Constants::String);
+                                    self.write_byte(Constants::String as u8);
                                     self.write_bytes(&buf);
                                 }
                                 "object" => {
@@ -482,7 +470,7 @@ impl<'a> Dumper<'a> {
                                         let has_instance_var: bool = object_length > 0;
 
                                         if has_instance_var {
-                                            self.write_byte(Constants::InstanceVar);
+                                            self.write_byte(Constants::InstanceVar as u8);
                                         }
 
                                         self.write_class(Constants::UserDefined, &mut value);
@@ -507,19 +495,23 @@ impl<'a> Dumper<'a> {
                                     self.write_instance_var(value["__members"].take());
                                 }
                                 "class" => {
-                                    self.write_byte(Constants::Class);
+                                    self.write_byte(Constants::Class as u8);
                                     self.write_string(value["__name"].take().as_str().unwrap());
                                 }
-                                "module" =>self.write_byte(
-                                    if value.get("__old").is_some_and(|old| old.as_bool().unwrap()) {
-                                        Constants::ModuleOld
+                                "module" => self.write_byte(
+                                    if let Some(old) = value.get("__old") {
+                                        if old.as_bool().unwrap() {
+                                            Constants::ModuleOld as u8
+                                        } else {
+                                            Constants::Module as u8
+                                        }
                                     } else {
-                                        Constants::Module
+                                        Constants::Module as u8
                                     },
 
                                 ),
                                 "regexp" => {
-                                    self.write_byte(Constants::Regexp);
+                                    self.write_byte(Constants::Regexp as u8);
                                     self.write_string(value["expression"].as_str().unwrap());
 
                                     let flags = value["flags"].as_str().unwrap();
@@ -534,24 +526,37 @@ impl<'a> Dumper<'a> {
                                         Constants::RegexpNone
                                     };
 
-                                    self.write_byte(options);
+                                    self.write_byte(options as u8);
                                 }
                                 "bigint" => {
                                     let bigint = BigInt::from_str(value["value"].as_str().unwrap()).unwrap();
-                                    self.write_number(bigint);
+                                    self.write_bignum(bigint);
                                 }
                                 _ => unreachable!()
                             }
                         } else {
                             let object = value.as_object_mut().unwrap();
+                            let default_value: Option<Value> = object.get_mut(DEFAULT_SYMBOL).map(|default_value| default_value.take());
 
-                            self.write_byte(
-                                if object.get(DEFAULT_SYMBOL).is_some() {
-                                    Constants::HashDefault
-                                } else {
-                                    Constants::Hash
-                                },
-                            );
+                            let hash_type = if default_value.is_some() {
+                                Constants::HashDefault
+                            } else {
+                                Constants::Hash
+                            };
+
+                            self.write_byte(hash_type as u8);
+
+                            for key in [
+                                "__class",
+                                "__type",
+                                "__data",
+                                "__wrapped",
+                                "__userDefined",
+                                "__userMarshal",
+                                DEFAULT_SYMBOL
+                            ] {
+                                object.shift_remove(key);
+                            }
 
                             let entries = object.iter_mut();
                             self.write_number(entries.len() as i32);
@@ -559,8 +564,12 @@ impl<'a> Dumper<'a> {
                             for (key, value) in entries {
                                 let key_value = if let Some(stripped) = key.strip_prefix("__integer__") {
                                     stripped.parse::<u16>().unwrap().into()
+                                } else if let Some(stripped) = key.strip_prefix("__float__") {
+                                    stripped.parse::<f64>().unwrap().into()
+                                } else if let Some(stripped) = key.strip_prefix("__array__") {
+                                    from_str(stripped).unwrap()
                                 } else if let Some(stripped) = key.strip_prefix("__object__") {
-                                    stripped.into()
+                                    from_str(stripped).unwrap()
                                 } else {
                                     key.as_str().into()
                                 };
@@ -568,11 +577,15 @@ impl<'a> Dumper<'a> {
                                 self.write_structure(key_value);
                                 self.write_structure(value.take());
                             }
+
+                            if let Some(default_value) = default_value {
+                                self.write_structure(default_value);
+                            }
                         }
                     }
                     Value::Array(_) => {
                         let array = value.as_array_mut().unwrap();
-                        self.write_byte(Constants::Array);
+                        self.write_byte(Constants::Array as u8);
                         self.write_number(array.len() as i32);
 
                         for element in array {
@@ -583,12 +596,12 @@ impl<'a> Dumper<'a> {
                         if string.starts_with("__symbol__") {
                             self.write_symbol(string.into());
                         } else {
-                            self.write_byte(Constants::InstanceVar);
-                            self.write_byte(Constants::String);
+                            self.write_byte(Constants::InstanceVar as u8);
+                            self.write_byte(Constants::String as u8);
                             self.write_string(string.as_str());
                             self.write_number(1);
                             self.write_symbol(ENCODING_SHORT_SYMBOL.into());
-                            self.write_byte(Constants::True);
+                            self.write_byte(Constants::True as u8);
                         }
                     }
                 }
@@ -609,10 +622,10 @@ impl<'a> Default for Dumper<'a> {
 /// # Example
 /// ```rust
 /// use marshal_rs::dump::dump;
-/// use serde_json::{Value, json};
+/// use serde_json::{json};
 ///
 /// // Value of null
-/// let json: serde_json::Value = json!(null); // null
+/// let json = json!(null); // null
 ///
 /// // Serialize Value to bytes
 /// let bytes: Vec<u8> = dump(json, None);

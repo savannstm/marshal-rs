@@ -1,55 +1,51 @@
 #![allow(clippy::approx_constant)]
-use core::str;
-use marshal_rs::load::load;
+use cfg_if::cfg_if;
+use marshal_rs::load::{load, StringMode};
 use num_bigint::{BigInt, BigUint};
-use serde_json::{from_value, json};
+cfg_if! {
+    if #[cfg(feature = "sonic")] {
+        use sonic_rs::json;
+    } else {
+        use serde_json::json;
+    }
+}
 use std::str::FromStr;
 
 #[test]
 #[should_panic(expected = "Incompatible Marshal file format or version.")]
 fn invalid_marshal_version() {
-    load(&[0x04, 0x09, 0x30], None);
+    load(b"\x04\x090", None, None);
 }
 
 #[test]
 fn null() {
-    assert_eq!(load(&[0x04, 0x08, 0x30], None), json!(null));
+    assert_eq!(load(b"\x04\x080", None, None), json!(null));
 }
 
 #[test]
 fn boolean() {
-    assert_eq!(load(&[0x04, 0x08, 0x54], None), json!(true));
-    assert_eq!(load(&[0x04, 0x08, 0x46], None), json!(false))
+    assert_eq!(load(b"\x04\x08T", None, None), json!(true));
+    assert_eq!(load(b"\x04\x08F", None, None), json!(false))
 }
 
 #[test]
 fn fixnum_positive() {
-    assert_eq!(load(&[0x04, 0x08, 0x69, 0x00], None), json!(0));
-    assert_eq!(load(&[0x04, 0x08, 0x69, 0x0A], None), json!(5));
+    assert_eq!(load(b"\x04\x08i\x00", None, None), json!(0));
+    assert_eq!(load(b"\x04\x08i\x0A", None, None), json!(5));
+    assert_eq!(load(b"\x04\x08i\x02\x2C\x01", None, None), json!(300));
+    assert_eq!(load(b"\x04\x08i\x03\x70\x11\x01", None, None), json!(70000));
     assert_eq!(
-        load(&[0x04, 0x08, 0x69, 0x02, 0x2C, 0x01], None),
-        json!(300)
-    );
-    assert_eq!(
-        load(&[0x04, 0x08, 0x69, 0x03, 0x70, 0x11, 0x01], None),
-        json!(70000)
-    );
-    assert_eq!(
-        load(&[0x04, 0x08, 0x69, 0x04, 0x00, 0x00, 0x00, 0x01], None),
+        load(b"\x04\x08i\x04\x00\x00\x00\x01", None, None),
         json!(16777216)
     );
 }
 
 #[test]
 fn fixnum_negative() {
-    assert_eq!(load(&[0x04, 0x08, 0x69, 0x00], None), json!(-0));
-    assert_eq!(load(&[0x04, 0x08, 0x69, 0xF6], None), json!(-5));
+    assert_eq!(load(b"\x04\x08i\xF6", None, None), json!(-5));
+    assert_eq!(load(b"\x04\x08i\xFE\xD4\xFE", None, None), json!(-300));
     assert_eq!(
-        load(&[0x04, 0x08, 0x69, 0xFE, 0xD4, 0xFE], None),
-        json!(-300)
-    );
-    assert_eq!(
-        load(&[0x04, 0x08, 0x69, 0xFD, 0x90, 0xEE, 0xFE], None),
+        load(b"\x04\x08i\xFD\x90\xEE\xFE", None, None),
         json!(-70000)
     );
 }
@@ -59,9 +55,10 @@ fn bignum_positive() {
     assert_eq!(
         load(
             b"\x04\x08l+\n\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00",
+            None,
             None
         ),
-        json!({"__type": "bigint", "value": BigInt::from_str("36893488147419103232").unwrap().to_string()})
+        json!({"__type": "bigint", "value": BigUint::from_str("36893488147419103232").unwrap().to_string()})
     );
 }
 
@@ -70,6 +67,7 @@ fn bignum_negative() {
     assert_eq!(
         load(
             b"\x04\x08l-\n\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00",
+            None,
             None
         ),
         json!({"__type": "bigint", "value": BigInt::from_str("-36893488147419103232").unwrap().to_string()})
@@ -78,81 +76,64 @@ fn bignum_negative() {
 
 #[test]
 fn float() {
-    assert_eq!(load(&[0x04, 0x08, 0x66, 0x06, 0x30], None), json!(0));
+    assert_eq!(load(b"\x04\x08f\x06\x30", None, None), json!(0.0));
+    assert_eq!(load(b"\x04\x08f\x07-0", None, None), json!(-0.0));
     assert_eq!(
-        load(&[0x04, 0x08, 0x66, 0x07, 0x07, 0x2D, 0x30], None),
-        json!(-0)
-    );
-    assert_eq!(
-        load(
-            &[0x04, 0x08, 0x66, 0x0C, 0x33, 0x2E, 0x31, 0x34, 0x31, 0x35, 0x39],
-            None
-        ),
+        load(b"\x04\x08f\x0C\x33\x2E\x31\x34\x31\x35\x39", None, None),
         json!(3.14159)
     );
     assert_eq!(
-        load(
-            &[0x04, 0x08, 0x66, 0x0D, 0x2D, 0x32, 0x2E, 0x37, 0x31, 0x38, 0x32, 0x38],
-            None
-        ),
+        load(b"\x04\x08f\x0D\x2D\x32\x2E\x37\x31\x38\x32\x38", None, None),
         json!(-2.71828)
     );
 }
 
 #[test]
-fn string() {
+fn string_utf8() {
     assert_eq!(
-        str::from_utf8(
-            &from_value::<Vec<_>>(
-                load(
-                    &[
-                        0x04, 0x08, 0x49, 0x22, 0x11, 0x53, 0x68, 0x6F, 0x72, 0x74, 0x20, 0x73,
-                        0x74, 0x72, 0x69, 0x6E, 0x67, 0x06, 0x3A, 0x06, 0x45, 0x54
-                    ],
-                    None
-                )["data"]
-                    .take()
-            )
-            .unwrap()
-        )
-        .unwrap(),
+        load(b"\x04\x08I\"\x11Short string\x06:\x06ET", None, None),
         json!("Short string")
     );
 
     assert_eq!(
-        str::from_utf8(
-            &from_value::<Vec<_>>(
-                load(
-                    &[
-                        0x04, 0x08, 0x49, 0x22, 0x01, 0xdc, 0x4c, 0x6f, 0x6e, 0x67, 0x20, 0x73,
-                        0x74, 0x72, 0x69, 0x6e, 0x67, 0x4c, 0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74,
-                        0x72, 0x69, 0x6e, 0x67, 0x4c, 0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74, 0x72,
-                        0x69, 0x6e, 0x67, 0x4c, 0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74, 0x72, 0x69,
-                        0x6e, 0x67, 0x4c, 0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74, 0x72, 0x69, 0x6e,
-                        0x67, 0x4c, 0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74, 0x72, 0x69, 0x6e, 0x67,
-                        0x4c, 0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x4c,
-                        0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x4c, 0x6f,
-                        0x6e, 0x67, 0x20, 0x73, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x4c, 0x6f, 0x6e,
-                        0x67, 0x20, 0x73, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x4c, 0x6f, 0x6e, 0x67,
-                        0x20, 0x73, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x4c, 0x6f, 0x6e, 0x67, 0x20,
-                        0x73, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x4c, 0x6f, 0x6e, 0x67, 0x20, 0x73,
-                        0x74, 0x72, 0x69, 0x6e, 0x67, 0x4c, 0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74,
-                        0x72, 0x69, 0x6e, 0x67, 0x4c, 0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74, 0x72,
-                        0x69, 0x6e, 0x67, 0x4c, 0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74, 0x72, 0x69,
-                        0x6e, 0x67, 0x4c, 0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74, 0x72, 0x69, 0x6e,
-                        0x67, 0x4c, 0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74, 0x72, 0x69, 0x6e, 0x67,
-                        0x4c, 0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x4c,
-                        0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x06, 0x3a,
-                        0x06, 0x45, 0x54,
-                    ],
-                    None
-                )["data"]
-                    .take()
-            )
-            .unwrap()
-        )
-        .unwrap(),
+        load(
+            b"\x04\x08I\"\x01\xdcLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong string\x06:\x06ET",
+            None, None
+        ),
         "Long string".repeat(20),
+    )
+}
+
+#[test]
+fn string_nonutf8() {
+    assert_eq!(
+        load(
+            b"\x04\x08I\"\x0b\xBA\xBA\xD7\xD6\xC4\xDA\x06:\rencoding\"\x08GBK",
+            None,
+            None
+        ),
+        json!("汉字内")
+    )
+}
+
+#[test]
+fn string_binary() {
+    assert_eq!(
+        load(
+            b"\x04\x08I\"\x11Short string\x06:\x06ET",
+            Some(StringMode::Binary),
+            None
+        ),
+        json!({"__type": "bytes", "data": "Short string".as_bytes()})
+    );
+
+    assert_eq!(
+        load(
+            b"\x04\x08I\"\x01\xdcLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong string\x06:\x06ET",
+            Some(StringMode::Binary),
+            None
+        ),
+        json!({"__type": "bytes", "data": "Long string".repeat(20).as_bytes()}),
     )
 }
 
@@ -160,21 +141,18 @@ fn string() {
 #[should_panic(expected = "Marshal data is too short.")]
 fn invalid_string() {
     // length of string is 4, which is equal to 0x09, but 0x10 length is passed
-    load(&[0x04, 0x08, 0x22, 0x10, 0xF0, 0x28, 0x8C, 0x28], None);
+    load(b"\x04\x08\"\x10\xf0(\x8c(", None, None);
 }
 
 #[test]
 fn array() {
     assert_eq!(
         load(
-            &[
-                0x04, 0x08, 0x5b, 0x0a, 0x69, 0x06, 0x49, 0x22, 0x08, 0x74, 0x77, 0x6f, 0x06, 0x3a,
-                0x06, 0x45, 0x54, 0x66, 0x06, 0x33, 0x5b, 0x06, 0x69, 0x09, 0x7b, 0x06, 0x69, 0x0a,
-                0x69, 0x0b
-            ],
+            b"\x04\x08[\x0ai\x06I\"\x08two\x06:\x06ETf\x063[\x06i\x09{\x06i\x0ai\x0b",
+            None,
             None
         ),
-        json!([1, {"__type": "bytes", "data": [116, 119, 111]}, 3.0, [4], {"__integer__5": 6}])
+        json!([1, "two", 3.0, [4], {"__integer__5": 6}])
     )
 }
 
@@ -182,25 +160,16 @@ fn array() {
 fn hash() {
     assert_eq!(
         load(
-            &[
-                0x04, 0x08, 0x7B, 0x08, 0x69, 0x06, 0x49, 0x22, 0x08, 0x6F, 0x6E, 0x65, 0x06, 0x3A,
-                0x06, 0x45, 0x54, 0x49, 0x22, 0x08, 0x74, 0x77, 0x6F, 0x06, 0x3B, 0x00, 0x54, 0x69,
-                0x07, 0x6F, 0x3A, 0x0B, 0x4F, 0x62, 0x6A, 0x65, 0x63, 0x74, 0x00, 0x30
-            ],
+            b"\x04\x08{\x08i\x06I\"\x08one\x06:\x06ETI\"\x08two\x06;\x00Ti\x07o:\x0bObject\x000",
+            None,
             None
         ),
-        json!({"__integer__1": {"__type": "bytes", "data": [111, 110, 101]}, "__object__{\"__type\":\"bytes\",\"data\":[116,119,111]}": 2, r#"__object__{"__class":"__symbol__Object","__type":"object"}"#: null})
+        json!({"__integer__1": "one", "two": 2, r#"__object__{"__class":"__symbol__Object","__type":"object"}"#: null})
     );
 
     assert_eq!(
-        load(
-            &[
-                0x04, 0x08, 0x7D, 0x00, 0x49, 0x22, 0x0C, 0x64, 0x65, 0x66, 0x61, 0x75, 0x6C, 0x74,
-                0x06, 0x3A, 0x06, 0x45, 0x54
-            ],
-            None
-        ),
-        json!({"__ruby_default__": {"__type": "bytes", "data": [100,101,102,97,117,108,116]}})
+        load(b"\x04\x08}\x00I\"\x0cdefault\x06:\x06ET", None, None),
+        json!({"__ruby_default__": "default"})
     )
 }
 
@@ -208,14 +177,11 @@ fn hash() {
 fn ruby_struct() {
     assert_eq!(
         load(
-            &[
-                0x04, 0x08, 0x53, 0x3A, 0x0B, 0x50, 0x65, 0x72, 0x73, 0x6F, 0x6E, 0x07, 0x3A, 0x09,
-                0x6E, 0x61, 0x6D, 0x65, 0x49, 0x22, 0x0A, 0x41, 0x6C, 0x69, 0x63, 0x65, 0x06, 0x3A,
-                0x06, 0x45, 0x54, 0x3A, 0x08, 0x61, 0x67, 0x65, 0x69, 0x23
-            ],
+            b"\x04\x08S:\x0bPerson\x07:\x09nameI\"\x0aAlice\x06:\x06ET:\x08agei#",
+            None,
             None
         ),
-        json!({"__class": "__symbol__Person", "__members": {"__symbol__age": 30, "__symbol__name": {"__type": "bytes", "data":  [65, 108, 105, 99, 101]}}, "__type": "struct"})
+        json!({"__class": "__symbol__Person", "__members": {"__symbol__age": 30, "__symbol__name": "Alice"}, "__type": "struct"})
     )
 }
 
@@ -223,14 +189,10 @@ fn ruby_struct() {
 fn object() {
     assert_eq!(
         load(
-            &[
-                0x04, 0x08, 0x6f, 0x3a, 0x11, 0x43, 0x75, 0x73, 0x74, 0x6f, 0x6d, 0x4f, 0x62, 0x6a,
-                0x65, 0x63, 0x74, 0x06, 0x3a, 0x0a, 0x40, 0x64, 0x61, 0x74, 0x61, 0x49, 0x22, 0x10,
-                0x6f, 0x62, 0x6a, 0x65, 0x63, 0x74, 0x20, 0x64, 0x61, 0x74, 0x61, 0x06, 0x3a, 0x06,
-                0x45, 0x54
-            ],
+            b"\x04\x08o:\x11CustomObject\x06:\x0a@dataI\"\x10object data\x06:\x06ET",
+            None,
             None
         ),
-        json!({"__class": "__symbol__CustomObject", "__symbol__@data": {"__type": "bytes", "data":  [111, 98, 106, 101, 99, 116, 32, 100, 97, 116, 97]}, "__type": "object"})
+        json!({"__class": "__symbol__CustomObject", "__symbol__@data": "object data", "__type": "object"})
     )
 }
