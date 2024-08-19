@@ -1,13 +1,14 @@
 [package]
 name = "marshal-rs"
 version = "0.1.0"
-edition = "2021"
 authors = ["savannstm <savannstm@gmail.com>"]
+edition = "2021"
+rust-version = "1.63.0"
 description = "Blazingly fast Ruby-lang's Marshal implementation in Rust."
 readme = "README.md"
+repository = "https://github.com/savannstm/marshal-rs"
 license-file = "LICENSE.md"
 keywords = ["marshal", "ruby", "serialize", "deserialize"]
-rust-version = "1.63.0"
 
 [features]
 sonic = ["dep:sonic-rs"]
