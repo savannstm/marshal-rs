@@ -8,7 +8,11 @@ use cfg_if::cfg_if;
 use core::str;
 use encoding_rs::{Encoding, UTF_8};
 use num_bigint::BigInt;
-use std::{cell::RefCell, mem::transmute, rc::Rc};
+use std::{
+    cell::{RefCell, UnsafeCell},
+    mem::transmute,
+    rc::Rc,
+};
 cfg_if! {
     if #[cfg(feature = "sonic")] {
         use sonic_rs::{
@@ -28,8 +32,8 @@ pub enum StringMode {
 pub struct Loader<'a> {
     buffer: &'a [u8],
     byte_position: usize,
-    symbols: Vec<Rc<RefCell<Value>>>,
-    objects: Vec<Rc<RefCell<Value>>>,
+    symbols: Vec<Rc<RefCell<UnsafeCell<Value>>>>,
+    objects: Vec<Rc<RefCell<UnsafeCell<Value>>>>,
     instance_var_prefix: Option<&'a str>,
     string_mode: Option<StringMode>,
 }
@@ -93,7 +97,7 @@ impl<'a> Loader<'a> {
 
         self.byte_position += 2;
 
-        let value: Value = self.read_next().take();
+        let value: Value = self.read_next().take().into_inner();
 
         self.symbols.clear();
         self.objects.clear();
@@ -132,9 +136,9 @@ impl<'a> Loader<'a> {
             -4..=4 => {
                 let absolute: i8 = fixnum_length.abs();
                 let bytes: &[u8] = self.read_bytes(absolute as usize);
-                let mut buffer = [if fixnum_length < 0 { 255u8 } else { 0u8 }; 4];
+                let mut buffer: [u8; 4] = [if fixnum_length < 0 { 255u8 } else { 0u8 }; 4];
 
-                let len = bytes.len().min(4);
+                let len: usize = bytes.len().min(4);
                 buffer[..len].copy_from_slice(&bytes[..len]);
 
                 i32::from_le_bytes(buffer)
@@ -150,28 +154,6 @@ impl<'a> Loader<'a> {
         }
     }
 
-    fn get_link_pos(&mut self) -> i32 {
-        let fixnum_length: i32 = self.read_byte() as i32;
-
-        match fixnum_length {
-            // Fixnum is zero
-            0 => 0,
-            // These values mark the length of fixnum in bytes
-            1..=4 => {
-                let absolute: i8 = fixnum_length.abs() as i8;
-                let bytes: &[u8] = self.read_bytes(absolute as usize);
-                let mut buffer: [u8; 4] = [0; 4];
-
-                let len: usize = bytes.len().min(4);
-                buffer[..len].copy_from_slice(&bytes[..len]);
-
-                i32::from_le_bytes(buffer) - 4
-            }
-            // Otherwise fixnum is a single byte and we read it
-            _ => fixnum_length - 5,
-        }
-    }
-
     fn read_chunk(&mut self) -> &[u8] {
         let amount: i32 = self.read_fixnum();
         self.read_bytes(amount as usize)
@@ -181,79 +163,23 @@ impl<'a> Loader<'a> {
         String::from_utf8_lossy(self.read_chunk()).to_string()
     }
 
-    fn read_bignum(&mut self) -> Value {
-        let sign: u8 = self.read_byte();
-        let length: i32 = self.read_fixnum() << 1;
-        let bytes: &[u8] = self.read_bytes(length as usize);
-        let result: BigInt = BigInt::from_bytes_le(
-            if sign == Constants::Positive {
-                num_bigint::Sign::Plus
-            } else {
-                num_bigint::Sign::Minus
-            },
-            bytes,
-        );
-
-        json!({"__type": "bigint", "value": result.to_string()})
-    }
-
-    fn parse_float(&mut self, string: &str) -> Option<f64> {
-        let mut chars: std::str::Chars = string.chars();
-        let first_char: Option<char> = chars.next();
-
-        let mut float: String = String::new();
-
-        if let Some(first_char) = first_char {
-            if first_char.is_numeric() || first_char == '-' {
-                float.push(first_char);
-            } else {
-                return None;
-            }
-        } else {
-            return None;
-        }
-
-        float += &chars
-            .take_while(|&ch| ch == '.' || ch.is_numeric())
-            .collect::<String>();
-
-        float.parse::<f64>().ok()
-    }
-
-    fn read_float(&mut self) -> Option<f64> {
-        let string: String = self.read_string();
-
-        match string.as_str() {
-            "inf" => Some(f64::INFINITY),
-            "-inf" => Some(-f64::INFINITY),
-            "nan" => None,
-            _ => Some(self.parse_float(&string).unwrap_or(0f64)),
-        }
-    }
-
-    fn read_regexp(&mut self) -> Value {
-        let string: String = self.read_string();
-        let regex_type: u8 = self.read_byte();
-        let mut flags: String = String::new();
-
-        if (regex_type & Constants::RegexpIgnore) != 0 {
-            flags += "i";
-        }
-
-        if (regex_type & Constants::RegexpMultiline) != 0 {
-            flags += "m";
-        }
-
-        json!({"__type": "regexp", "expression": string, "flags": flags})
-    }
-
-    fn read_next(&mut self) -> Rc<RefCell<Value>> {
+    fn read_next(&mut self) -> Rc<RefCell<UnsafeCell<Value>>> {
         let structure_type: Constants = unsafe { transmute(self.read_byte()) };
         match structure_type {
-            Constants::Nil => Rc::from(RefCell::from(json!(null))),
-            Constants::True => Rc::from(RefCell::from(json!(true))),
-            Constants::False => Rc::from(RefCell::from(json!(false))),
-            Constants::Fixnum => Rc::from(RefCell::from(json!(self.read_fixnum()))),
+            Constants::Nil => Rc::from(RefCell::from(UnsafeCell::from(json!(null)))),
+            Constants::True => Rc::from(RefCell::from(UnsafeCell::from(json!(true)))),
+            Constants::False => Rc::from(RefCell::from(UnsafeCell::from(json!(false)))),
+            Constants::Fixnum => {
+                Rc::from(RefCell::from(UnsafeCell::from(json!(self.read_fixnum()))))
+            }
+            Constants::Symlink => {
+                let pos: i32 = self.read_fixnum();
+                self.symbols[pos as usize].clone()
+            }
+            Constants::Link => {
+                let pos: i32 = self.read_fixnum();
+                self.objects[pos as usize].clone()
+            }
             Constants::Symbol => {
                 let prefix: String = String::from("__symbol__");
                 let symbol: &String = &self.read_string();
@@ -266,27 +192,20 @@ impl<'a> Loader<'a> {
                     }
                 }
 
-                let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(symbol));
+                let rc = Rc::from(RefCell::from(UnsafeCell::from(symbol)));
                 self.symbols.push(rc.clone());
                 rc
             }
-            Constants::Symlink => {
-                let pos: i32 = self.read_fixnum();
-                self.symbols[pos as usize].clone()
-            }
-            Constants::Link => {
-                let pos: i32 = self.get_link_pos();
-                self.objects[pos as usize].clone()
-            }
             Constants::InstanceVar => {
-                let object: Rc<RefCell<Value>> = self.read_next();
+                let object = self.read_next();
                 let size: i32 = self.read_fixnum();
 
                 for _ in 0..size {
-                    let key: Rc<RefCell<Value>> = self.read_next();
+                    let key = self.read_next();
                     let mut value: Option<Vec<u8>> = None;
 
-                    if let Some(data) = self.read_next().borrow_mut().get_mut("data") {
+                    if let Some(data) = &mut self.read_next().borrow_mut().get_mut().get_mut("data")
+                    {
                         cfg_if! {
                             if #[cfg(feature = "sonic")] {
                                 value = from_value(data).unwrap();
@@ -296,15 +215,18 @@ impl<'a> Loader<'a> {
                         }
                     }
 
-                    if (object.borrow()["__type"].as_str().unwrap() == "bytes")
+                    if (unsafe { &*object.borrow().get() }["__type"]
+                        .as_str()
+                        .unwrap()
+                        == "bytes")
                         && [
                             Value::from(ENCODING_LONG_SYMBOL),
                             Value::from(ENCODING_SHORT_SYMBOL),
                         ]
-                        .contains(&key.borrow())
+                        .contains(unsafe { &*key.borrow().get() })
                         && self.string_mode != Some(StringMode::Binary)
                     {
-                        let bytes: Value = object.borrow_mut()["data"].take();
+                        let bytes: Value = unsafe { &*object.borrow().get() }["data"].clone();
 
                         cfg_if! {
                             if #[cfg(feature = "sonic")] {
@@ -314,8 +236,8 @@ impl<'a> Loader<'a> {
                             }
                         }
 
-                        if *key.borrow() == ENCODING_SHORT_SYMBOL {
-                            *object.borrow_mut() =
+                        if unsafe { &*key.borrow().get() } == ENCODING_SHORT_SYMBOL {
+                            *object.borrow_mut().get_mut() =
                                 (unsafe { str::from_utf8_unchecked(&array) }).into();
                         } else {
                             let (cow, _, _) = Encoding::for_label(&value.unwrap())
@@ -324,9 +246,9 @@ impl<'a> Loader<'a> {
 
                             cfg_if! {
                                 if #[cfg(feature = "sonic")] {
-                                    *object.borrow_mut() = cow.into();
+                                    *object.borrow_mut().get_mut() = cow.into();
                                 } else {
-                                    *object.borrow_mut() = (cow.to_string()).into();
+                                    *object.borrow_mut().get_mut() = (cow.to_string()).into();
                                 }
                             }
 
@@ -338,113 +260,160 @@ impl<'a> Loader<'a> {
                 object
             }
             Constants::Extended => {
-                let symbol: Rc<RefCell<Value>> = self.read_next();
-                let object: Rc<RefCell<Value>> = self.read_next();
+                let symbol = self.read_next();
+                let object = self.read_next();
 
-                if object.borrow().is_object() && object.borrow_mut().get(EXTENDS_SYMBOL).is_none()
+                if unsafe { &*object.borrow().get() }.is_object()
+                    && object.borrow_mut().get_mut().get(EXTENDS_SYMBOL).is_none()
                 {
-                    object.borrow_mut()[EXTENDS_SYMBOL] = json!([]);
-                    object.borrow_mut()[EXTENDS_SYMBOL]
+                    object.borrow_mut().get_mut()[EXTENDS_SYMBOL] = json!([]);
+                    object.borrow_mut().get_mut()[EXTENDS_SYMBOL]
                         .as_array_mut()
                         .unwrap()
-                        .insert(0, symbol.take());
+                        .insert(0, symbol.take().into_inner());
                 }
 
                 object
             }
             Constants::Array => {
                 let size: i32 = self.read_fixnum();
-                let mut array: Value = json!(vec![0; size as usize]);
+                let rc = Rc::from(RefCell::from(UnsafeCell::from(json!(vec![
+                    0;
+                    size as usize
+                ]))));
+                self.objects.push(rc.clone());
 
                 for i in 0..size as usize {
-                    array[i] = self.read_next().borrow().clone();
+                    rc.borrow_mut().get_mut()[i] =
+                        unsafe { &*self.read_next().borrow().get() }.clone();
                 }
 
-                let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(array));
-                self.objects.push(rc.clone());
                 rc
             }
             Constants::Bignum => {
-                let bignum: Value = self.read_bignum();
+                let sign: u8 = self.read_byte();
+                let length: i32 = self.read_fixnum() << 1;
+                let bytes: &[u8] = self.read_bytes(length as usize);
+                let result: BigInt = BigInt::from_bytes_le(
+                    if sign == Constants::Positive {
+                        num_bigint::Sign::Plus
+                    } else {
+                        num_bigint::Sign::Minus
+                    },
+                    bytes,
+                );
 
-                let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(bignum));
+                let bignum: Value = json!({"__type": "bigint", "value": result.to_string()});
+
+                let rc = Rc::from(RefCell::from(UnsafeCell::from(bignum)));
                 self.objects.push(rc.clone());
                 rc
             }
             Constants::Class => {
                 let object_class: String = self.read_string();
 
-                let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(
+                let rc = Rc::from(RefCell::from(UnsafeCell::from(
                     json!({ "__class": object_class, "__type": "class" }),
-                ));
+                )));
                 self.objects.push(rc.clone());
                 rc
             }
             Constants::Module | Constants::ModuleOld => {
                 let object_class: String = self.read_string();
 
-                let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(
+                let rc = Rc::from(RefCell::from(UnsafeCell::from(
                     json!({ "__class": object_class, "__type": "module", "__old": structure_type == Constants::ModuleOld }),
-                ));
+                )));
                 self.objects.push(rc.clone());
                 rc
             }
             Constants::Float => {
-                let float: Option<f64> = self.read_float();
-                let object = match float {
-                    Some(value) => Rc::from(RefCell::from(json!(value))),
-                    None => Rc::from(RefCell::from(json!(null))),
+                let string: &str = &self.read_string();
+
+                let float: Option<f64> = match string {
+                    "inf" => Some(f64::INFINITY),
+                    "-inf" => Some(-f64::INFINITY),
+                    "nan" => None,
+                    _ => {
+                        let mut chars: std::str::Chars = string.chars();
+                        let first_char: Option<char> = chars.next();
+
+                        let mut float: String = String::new();
+
+                        if let Some(first_char) = first_char {
+                            if first_char.is_numeric() || first_char == '-' {
+                                float.push(first_char);
+
+                                float += &chars
+                                    .take_while(|&ch| ch == '.' || ch.is_numeric())
+                                    .collect::<String>();
+
+                                Some(float.parse::<f64>().ok().unwrap_or(0f64))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
                 };
+
+                let object = Rc::from(RefCell::from(UnsafeCell::from(match float {
+                    Some(value) => json!(value),
+                    None => json!(null),
+                })));
 
                 self.objects.push(object.clone());
                 object
             }
             Constants::Hash | Constants::HashDefault => {
                 let hash_size: i32 = self.read_fixnum();
-                let mut hash: Value = json!({});
+                let rc = Rc::from(RefCell::from(UnsafeCell::from(json!({}))));
+                self.objects.push(rc.clone());
 
                 for _ in 0..hash_size {
-                    let key: Rc<RefCell<Value>> = self.read_next();
-                    let value: Rc<RefCell<Value>> = self.read_next();
+                    let key = self.read_next();
+                    let value = self.read_next();
 
-                    let key: String = if let Some(key) = key.borrow().as_i64() {
+                    let key: String = if let Some(key) = unsafe { &*key.borrow().get() }.as_i64() {
                         "__integer__".to_string() + &to_string(&key).unwrap()
-                    } else if let Some(key) = key.borrow().as_f64() {
+                    } else if let Some(key) = unsafe { &*key.borrow().get() }.as_f64() {
                         "__float__".to_string() + &to_string(&key).unwrap()
-                    } else if let Some(key) = key.borrow().as_array() {
+                    } else if let Some(key) = unsafe { &*key.borrow().get() }.as_array() {
                         "__array__".to_string() + &to_string(key).unwrap()
-                    } else if let Some(key) = key.borrow().as_object() {
+                    } else if let Some(key) = unsafe { &*key.borrow().get() }.as_object() {
                         "__object__".to_string() + &to_string(&key).unwrap()
-                    } else if let Some(key) = key.borrow().as_str() {
+                    } else if let Some(key) = unsafe { &*key.borrow().get() }.as_str() {
                         key.to_string()
                     } else {
                         panic!()
                     };
 
-                    hash[&key] = value.borrow().clone();
+                    rc.borrow_mut().get_mut()[&key] = unsafe { &*value.borrow().get() }.clone();
                 }
 
                 if structure_type == Constants::HashDefault {
-                    hash[DEFAULT_SYMBOL] = self.read_next().borrow().clone();
+                    rc.borrow_mut().get_mut()[DEFAULT_SYMBOL] =
+                        unsafe { &*self.read_next().borrow().get() }.clone();
                 }
 
-                let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(hash));
-                self.objects.push(rc.clone());
                 rc
             }
             Constants::Object => {
-                let object_class: Rc<RefCell<Value>> = self.read_next();
-                let mut object: Value =
-                    json!({ "__class": object_class.borrow().clone(), "__type": "object" });
+                let object_class = self.read_next();
+                let rc = Rc::from(RefCell::from(UnsafeCell::from(
+                    json!({ "__class": unsafe { &*object_class.borrow().get() }.clone(), "__type": "object" }),
+                )));
+                self.objects.push(rc.clone());
 
                 let object_size: i32 = self.read_fixnum();
 
                 for _ in 0..object_size {
-                    let key: Value = self.read_next().borrow().clone();
-                    let value: Value = self.read_next().borrow().clone();
+                    let key: Value = unsafe { &*self.read_next().borrow().get() }.clone();
+                    let value: Value = unsafe { &*self.read_next().borrow().get() }.clone();
 
                     let key_str: &str = key.as_str().unwrap();
-                    object[key_str
+                    rc.borrow_mut().get_mut()[key_str
                         .replacen(
                             "__symbol__@",
                             self.instance_var_prefix.unwrap_or("__symbol__@"),
@@ -453,14 +422,29 @@ impl<'a> Loader<'a> {
                         .as_str()] = value;
                 }
 
-                let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(object));
-                self.objects.push(rc.clone());
                 rc
             }
             Constants::Regexp => {
-                let regexp: Value = self.read_regexp();
+                let string: String = self.read_string();
+                let regex_type: u8 = self.read_byte();
+                let mut flags: String = String::new();
 
-                let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(regexp));
+                if regex_type & Constants::RegexpIgnore != 0 {
+                    flags += "i";
+                }
+
+                if regex_type & Constants::RegexpExtended != 0 {
+                    flags += "x";
+                }
+
+                if regex_type & Constants::RegexpMultiline != 0 {
+                    flags += "m";
+                }
+
+                let regexp: Value =
+                    json!({"__type": "regexp", "expression": string, "flags": flags});
+
+                let rc = Rc::from(RefCell::from(UnsafeCell::from(regexp)));
                 self.objects.push(rc.clone());
                 rc
             }
@@ -478,29 +462,24 @@ impl<'a> Loader<'a> {
                     json!({ "__type": "bytes", "data": json!(string_bytes) })
                 };
 
-                let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(object));
+                let rc = Rc::from(RefCell::from(UnsafeCell::from(object)));
                 self.objects.push(rc.clone());
                 rc
             }
             Constants::Struct => {
-                let struct_class: Rc<RefCell<Value>> = self.read_next();
+                let struct_class = self.read_next();
 
-                cfg_if! {
-                    if #[cfg(feature = "sonic")] {
-                        let mut ruby_struct: Value =
-                            json!({ "__class": struct_class, "__type": "struct" });
-                    } else {
-                        let mut ruby_struct: Value =
-                            json!({ "__class": *struct_class, "__type": "struct" });
-                    }
-                }
+                let rc = Rc::from(RefCell::from(UnsafeCell::from(
+                    json!({ "__class": unsafe {&*struct_class.borrow().get()}, "__type": "struct" }),
+                )));
+                self.objects.push(rc.clone());
 
                 let struct_size: i32 = self.read_fixnum();
                 let mut hash: Value = json!({});
 
                 for _ in 0..struct_size {
-                    let key: Value = self.read_next().borrow().clone();
-                    let value: Value = self.read_next().borrow().clone();
+                    let key: Value = unsafe { &*self.read_next().borrow().get() }.clone();
+                    let value: Value = unsafe { &*self.read_next().borrow().get() }.clone();
 
                     let mut key_string: String = String::new();
 
@@ -529,39 +508,37 @@ impl<'a> Loader<'a> {
                     hash[&key_string] = value;
                 }
 
-                ruby_struct["__members"] = hash;
-
-                let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(ruby_struct));
-                self.objects.push(rc.clone());
+                rc.borrow_mut().get_mut()["__members"] = hash;
                 rc
             }
             Constants::Data
             | Constants::UserClass
             | Constants::UserDefined
             | Constants::UserMarshal => {
-                cfg_if! {
-                    if #[cfg(feature = "sonic")] {
-                        let mut object: Value =
-                            json!({ "__class": self.read_next(), "__type": "object" });
-
-                    } else {
-                        let mut object: Value =
-                            json!({ "__class": *self.read_next(), "__type": "object" });
-                    }
-                }
+                let rc = Rc::from(RefCell::from(UnsafeCell::from(
+                    json!({ "__class": unsafe { &*self.read_next().borrow().get() }, "__type": "object" }),
+                )));
+                self.objects.push(rc.clone());
 
                 match structure_type {
-                    Constants::Data => object["__data"] = self.read_next().borrow().clone(),
-                    Constants::UserClass => object["__wrapped"] = self.read_next().borrow().clone(),
-                    Constants::UserDefined => object["__userDefined"] = (self.read_chunk()).into(),
+                    Constants::Data => {
+                        rc.borrow_mut().get_mut()["__data"] =
+                            unsafe { &*self.read_next().borrow().get() }.clone()
+                    }
+                    Constants::UserClass => {
+                        rc.borrow_mut().get_mut()["__wrapped"] =
+                            unsafe { &*self.read_next().borrow().get() }.clone()
+                    }
+                    Constants::UserDefined => {
+                        rc.borrow_mut().get_mut()["__userDefined"] = (self.read_chunk()).into()
+                    }
                     Constants::UserMarshal => {
-                        object["__userMarshal"] = self.read_next().borrow().clone()
+                        rc.borrow_mut().get_mut()["__userMarshal"] =
+                            unsafe { &*self.read_next().borrow().get() }.clone()
                     }
                     _ => unreachable!(),
                 }
 
-                let rc: Rc<RefCell<Value>> = Rc::from(RefCell::from(object));
-                self.objects.push(rc.clone());
                 rc
             }
             _ => unreachable!(),

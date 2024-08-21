@@ -1,4 +1,4 @@
-//! Utilities to serialize JSON objects back to Marshal byte streams.
+//! Utilities for serializing JSON objects back to Marshal byte streams.
 
 use crate::{Constants, DEFAULT_SYMBOL, ENCODING_SHORT_SYMBOL, EXTENDS_SYMBOL, MARSHAL_VERSION};
 use cfg_if::cfg_if;
@@ -7,26 +7,51 @@ use std::{mem, str::FromStr};
 cfg_if! {
     if #[cfg(feature = "sonic")] {
         use sonic_rs::{
-            from_value, Array, JsonContainerTrait, JsonType, JsonValueMutTrait, JsonValueTrait, Object,
-            Value, from_str, Array
+            json, from_value, Array, JsonContainerTrait, JsonType, JsonValueMutTrait, JsonValueTrait, Object,
+            Value, from_str
         };
     } else {
         use serde_json::{from_value, Value, from_str};
+        use std::collections::HashMap;
     }
 }
 
-pub struct Dumper<'a> {
-    buffer: Vec<u8>,
-    symbols: Vec<Value>,
-    instance_var_prefix: Option<&'a str>,
+cfg_if! {
+    if #[cfg(feature = "sonic")] {
+        pub struct Dumper<'a> {
+            buffer: Vec<u8>,
+            symbols: Vec<Value>,
+            objects: Vec<Value>,
+            instance_var_prefix: Option<&'a str>,
+        }
+    } else {
+        pub struct Dumper<'a> {
+            buffer: Vec<u8>,
+            symbols: HashMap<Value, usize>,
+            objects: HashMap<Value, usize>,
+            instance_var_prefix: Option<&'a str>,
+        }
+    }
 }
 
 impl<'a> Dumper<'a> {
     pub fn new() -> Self {
-        Self {
-            buffer: Vec::with_capacity(128),
-            symbols: Vec::new(),
-            instance_var_prefix: None,
+        cfg_if! {
+            if #[cfg(feature = "sonic")] {
+                Self {
+                    buffer: Vec::with_capacity(128),
+                    symbols: Vec::new(),
+                    objects: Vec::new(),
+                    instance_var_prefix: None,
+                }
+            } else {
+                Self {
+                    buffer: Vec::with_capacity(128),
+                    symbols: HashMap::new(),
+                    objects: HashMap::new(),
+                    instance_var_prefix: None,
+                }
+            }
         }
     }
 
@@ -78,10 +103,10 @@ impl<'a> Dumper<'a> {
 
         self.write_byte(Constants::Bignum as u8);
         self.write_byte(if sign == Sign::Plus {
-            Constants::Positive as u8
+            Constants::Positive
         } else {
-            Constants::Negative as u8
-        });
+            Constants::Negative
+        } as u8);
 
         bytes[0] = 0;
         bytes.push(0);
@@ -144,13 +169,27 @@ impl<'a> Dumper<'a> {
             symbol = stripped.into();
         }
 
-        if let Some(pos) = self.symbols.iter().position(|sym: &Value| sym == &symbol) {
+        cfg_if! {
+            if #[cfg(feature = "sonic")] {
+                let pos = self.symbols.iter().position(|sym| *sym == symbol);
+            } else {
+                let pos = self.symbols.get(&symbol).copied();
+            }
+        }
+        if let Some(pos) = pos {
             self.write_byte(Constants::Symlink as u8);
             self.write_number(pos as i32);
         } else {
             self.write_byte(Constants::Symbol as u8);
             self.write_bytes(symbol.as_str().unwrap().as_bytes());
-            self.symbols.push(symbol);
+
+            cfg_if! {
+                if #[cfg(feature = "sonic")] {
+                    self.symbols.push(symbol);
+                } else {
+                    self.symbols.insert(symbol, self.symbols.len());
+                }
+            }
         }
     }
 
@@ -240,15 +279,21 @@ impl<'a> Dumper<'a> {
     fn write_structure(&mut self, mut value: Value) {
         cfg_if! {
             if #[cfg(feature = "sonic")] {
+                if let Some(value) = self.objects.iter().position(|val| *val == value) {
+                    self.write_byte(Constants::Link as u8);
+                    self.write_number(value as i32);
+                    return;
+                }
+
                 match value.get_type() {
                     JsonType::Null => self.write_byte(Constants::Nil as u8),
                     JsonType::Boolean => {
                         self.write_byte(
                             if value.is_true() {
-                                Constants::True as u8
+                                Constants::True
                             } else {
-                                Constants::False as u8
-                            },
+                                Constants::False
+                            } as u8,
                         );
                     }
                     JsonType::Number => {
@@ -256,6 +301,10 @@ impl<'a> Dumper<'a> {
                             self.write_byte(Constants::Fixnum as u8);
                             self.write_number(integer as i32);
                         } else if let Some(float) = value.as_f64() {
+                            if !self.objects.contains(&value) {
+                                self.objects.push(value);
+                            }
+
                             self.write_byte(Constants::Float as u8);
                             self.write_float(float);
                         }
@@ -266,10 +315,18 @@ impl<'a> Dumper<'a> {
                                 "bytes" => {
                                     let buf: Vec<u8> = from_value(&value["data"]).unwrap();
 
+                                    if !self.objects.contains(&value["data"]) {
+                                        self.objects.push(value["data"].take());
+                                    }
+
                                     self.write_byte(Constants::String as u8);
                                     self.write_bytes(&buf);
                                 }
                                 "object" => {
+                                    if !self.objects.contains(&value) {
+                                        self.objects.push(value.clone());
+                                    }
+
                                     if value.get("__data").is_some() {
                                         self.write_class(Constants::Data, &mut value);
                                         self.write_structure(value["__data"].take());
@@ -309,47 +366,81 @@ impl<'a> Dumper<'a> {
                                     }
                                 }
                                 "struct" => {
+                                    if !self.objects.contains(&value) {
+                                        self.objects.push(value.clone());
+                                    }
+
                                     self.write_class(Constants::Struct, &mut value);
                                     self.write_instance_var(value["__members"].take());
                                 }
                                 "class" => {
+                                    if !self.objects.contains(&value) {
+                                        self.objects.push(value.clone());
+                                    }
+
                                     self.write_byte(Constants::Class as u8);
                                     self.write_string(value["__name"].take().as_str().unwrap());
                                 }
-                                "module" => self.write_byte(
-                                    if value.get("__old").is_true() {
-                                        Constants::ModuleOld as u8
-                                    } else {
-                                        Constants::Module as u8
-                                    },
-                                ),
+                                "module" => {
+                                    if !self.objects.contains(&value) {
+                                        self.objects.push(value.clone());
+                                    }
+
+                                    self.write_byte(
+                                        if value.get("__old").is_true() {
+                                            Constants::ModuleOld
+                                        } else {
+                                            Constants::Module
+                                        } as u8,
+                                    );
+
+                                    self.write_string(value["__name"].take().as_str().unwrap());
+                                },
                                 "regexp" => {
+                                    if !self.objects.contains(&value) {
+                                        self.objects.push(value.clone());
+                                    }
+
                                     self.write_byte(Constants::Regexp as u8);
                                     self.write_string(value["expression"].as_str().unwrap());
 
                                     let flags = value["flags"].as_str().unwrap();
+                                    let mut options: u8 = 0;
 
-                                    let options: Constants =  if flags == "im" {
-                                        Constants::RegexpBoth
-                                    } else if flags.contains('i') {
-                                        Constants::RegexpIgnore
-                                    } else if flags.contains('m') {
-                                        Constants::RegexpMultiline
-                                    } else {
-                                        Constants::RegexpNone
-                                    };
+                                    if flags.contains("i") {
+                                        options |= Constants::RegexpIgnore as u8;
+                                    }
+
+                                    if flags.contains("x") {
+                                        options |= Constants::RegexpExtended as u8;
+                                    }
+
+                                    if flags.contains("m") {
+                                        options |= Constants::RegexpMultiline as u8;
+                                    }
 
                                     self.write_byte(options as u8);
                                 }
                                 "bigint" => {
+                                    if !self.objects.contains(&value) {
+                                        self.objects.push(value.clone());
+                                    }
+
                                     let bigint = BigInt::from_str(value["value"].as_str().unwrap()).unwrap();
                                     self.write_bignum(bigint);
                                 }
                                 _ => unreachable!()
                             }
                         } else {
+                            if !self.objects.contains(&value) {
+                                self.objects.push(value.clone());
+                            }
+
                             let object: &mut Object = value.as_object_mut().unwrap();
-                            let default_value: Option<Value> = object.get_mut(&DEFAULT_SYMBOL).map(|default_value| default_value.take());
+                            let default_value: Option<Value> = object
+                                                                    .get_mut(&DEFAULT_SYMBOL)
+                                                                    .map(|default_value| default_value.take());
+
                             let hash_type = if default_value.is_some() {
                                 Constants::HashDefault
                             } else {
@@ -377,7 +468,7 @@ impl<'a> Dumper<'a> {
                                 let key_value = if let Some(stripped) = key.strip_prefix("__integer__") {
                                     stripped.parse::<u64>().unwrap().into()
                                 } else if let Some(stripped) = key.strip_prefix("__float__") {
-                                    stripped.parse::<f64>().unwrap().into()
+                                    json!(stripped.parse::<f64>().unwrap())
                                 } else if let Some(stripped) = key.strip_prefix("__array__") {
                                     from_str(stripped).unwrap()
                                 } else if let Some(stripped) = key.strip_prefix("__object__") {
@@ -396,6 +487,10 @@ impl<'a> Dumper<'a> {
                         }
                     }
                     JsonType::Array => {
+                        if !self.objects.contains(&value) {
+                            self.objects.push(value.clone());
+                        }
+
                         let array: &mut Array = value.as_array_mut().unwrap();
                         self.write_byte(Constants::Array as u8);
                         self.write_number(array.len() as i32);
@@ -410,6 +505,10 @@ impl<'a> Dumper<'a> {
                         if string.starts_with("__symbol__") {
                             self.write_symbol(string.into());
                         } else {
+                            if !self.objects.contains(&value) {
+                                self.objects.push(value.clone());
+                            }
+
                             self.write_byte(Constants::InstanceVar as u8);
                             self.write_byte(Constants::String as u8);
                             self.write_string(string);
@@ -420,23 +519,32 @@ impl<'a> Dumper<'a> {
                     }
                 }
             } else {
+                if let Some(&value) = self.objects.get(&value) {
+                    self.write_byte(Constants::Link as u8);
+                    self.write_number(value as i32);
+                    return;
+                }
+
                 match value {
-                    Value::Null =>self.write_byte(Constants::Nil as u8),
+                    Value::Null => self.write_byte(Constants::Nil as u8),
                     Value::Bool(bool) => {
                         self.write_byte(
                             if bool {
-                                Constants::True as u8
+                                Constants::True
                             } else {
-                                Constants::False as u8
-                            },
-
+                                Constants::False
+                            } as u8,
                         );
                     }
-                    Value::Number(number) => {
-                        if let Some(integer) = number.as_i64() {
+                    Value::Number(_) => {
+                        if let Some(integer) = value.as_i64() {
                             self.write_byte(Constants::Fixnum as u8);
                             self.write_number(integer as i32);
-                        } else if let Some(float) = number.as_f64() {
+                        } else if let Some(float) = value.as_f64() {
+                            if !self.objects.contains_key(&value) {
+                                self.objects.insert(value, self.objects.len());
+                            }
+
                             self.write_byte(Constants::Float as u8);
                             self.write_float(float);
                         }
@@ -445,17 +553,25 @@ impl<'a> Dumper<'a> {
                         if let Some(object_type) = value.get("__type") {
                             match object_type.as_str().unwrap() {
                                 "bytes" => {
-                                    let buf: Vec<u8> = from_value(value["data"].take()).unwrap();
+                                    let buf: Vec<u8> = from_value(value["data"].clone()).unwrap();
+
+                                    if !self.objects.contains_key(&value["data"]) {
+                                        self.objects.insert(value["data"].take(), self.objects.len());
+                                    }
 
                                     self.write_byte(Constants::String as u8);
                                     self.write_bytes(&buf);
                                 }
                                 "object" => {
+                                    if !self.objects.contains_key(&value) {
+                                        self.objects.insert(value.clone(), self.objects.len());
+                                    }
+
                                     if value.get("__data").is_some() {
                                         self.write_class(Constants::Data, &mut value);
                                         self.write_structure(value["__data"].take());
                                     } else if value.get("__wrapped").is_some() {
-                                        self.write_user_class( &mut value);
+                                        self.write_user_class(&mut value);
                                         self.write_structure(value["__wrapped"].take());
                                     } else if value.get("__userDefined").is_some() {
                                         let object = value.as_object_mut().unwrap();
@@ -491,52 +607,84 @@ impl<'a> Dumper<'a> {
                                     }
                                 }
                                 "struct" => {
+                                    if !self.objects.contains_key(&value) {
+                                        self.objects.insert(value.clone(), self.objects.len());
+                                    }
+
                                     self.write_class(Constants::Struct, &mut value);
                                     self.write_instance_var(value["__members"].take());
                                 }
                                 "class" => {
+                                    if !self.objects.contains_key(&value) {
+                                        self.objects.insert(value.clone(), self.objects.len());
+                                    }
+
                                     self.write_byte(Constants::Class as u8);
                                     self.write_string(value["__name"].take().as_str().unwrap());
                                 }
-                                "module" => self.write_byte(
-                                    if let Some(old) = value.get("__old") {
-                                        if old.as_bool().unwrap() {
-                                            Constants::ModuleOld as u8
-                                        } else {
-                                            Constants::Module as u8
-                                        }
-                                    } else {
-                                        Constants::Module as u8
-                                    },
+                                "module" => {
+                                    if !self.objects.contains_key(&value) {
+                                        self.objects.insert(value.clone(), self.objects.len());
+                                    }
 
-                                ),
+                                    self.write_byte(
+                                        if let Some(old) = value.get("__old") {
+                                            if old.as_bool().unwrap() {
+                                                Constants::ModuleOld
+                                            } else {
+                                                Constants::Module
+                                            }
+                                        } else {
+                                            Constants::Module
+                                        } as u8
+                                    );
+
+                                    self.write_string(value["__name"].take().as_str().unwrap());
+                                },
                                 "regexp" => {
+                                    if !self.objects.contains_key(&value) {
+                                        self.objects.insert(value.clone(), self.objects.len());
+                                    }
+
                                     self.write_byte(Constants::Regexp as u8);
                                     self.write_string(value["expression"].as_str().unwrap());
 
                                     let flags = value["flags"].as_str().unwrap();
+                                    let mut options: u8 = 0;
 
-                                    let options: Constants =  if flags == "im" {
-                                        Constants::RegexpBoth
-                                    } else if flags.contains('i') {
-                                        Constants::RegexpIgnore
-                                    } else if flags.contains('m') {
-                                        Constants::RegexpMultiline
-                                    } else {
-                                        Constants::RegexpNone
-                                    };
+                                    if flags.contains("i") {
+                                        options |= Constants::RegexpIgnore as u8;
+                                    }
 
-                                    self.write_byte(options as u8);
+                                    if flags.contains("x") {
+                                        options |= Constants::RegexpExtended as u8;
+                                    }
+
+                                    if flags.contains("m") {
+                                        options |= Constants::RegexpMultiline as u8;
+                                    }
+
+                                    self.write_byte(options);
                                 }
                                 "bigint" => {
+                                    if !self.objects.contains_key(&value) {
+                                        self.objects.insert(value.clone(), self.objects.len());
+                                    }
+
                                     let bigint = BigInt::from_str(value["value"].as_str().unwrap()).unwrap();
                                     self.write_bignum(bigint);
                                 }
                                 _ => unreachable!()
                             }
                         } else {
+                            if !self.objects.contains_key(&value) {
+                                self.objects.insert(value.clone(), self.objects.len());
+                            }
+
                             let object = value.as_object_mut().unwrap();
-                            let default_value: Option<Value> = object.get_mut(DEFAULT_SYMBOL).map(|default_value| default_value.take());
+                            let default_value: Option<Value> = object
+                                                                    .get_mut(DEFAULT_SYMBOL)
+                                                                    .map(|default_value| default_value.take());
 
                             let hash_type = if default_value.is_some() {
                                 Constants::HashDefault
@@ -584,6 +732,10 @@ impl<'a> Dumper<'a> {
                         }
                     }
                     Value::Array(_) => {
+                        if !self.objects.contains_key(&value) {
+                            self.objects.insert(value.clone(), self.objects.len());
+                        }
+
                         let array = value.as_array_mut().unwrap();
                         self.write_byte(Constants::Array as u8);
                         self.write_number(array.len() as i32);
@@ -592,13 +744,19 @@ impl<'a> Dumper<'a> {
                             self.write_structure(element.take());
                         }
                     }
-                    Value::String(string) => {
+                    Value::String(_) => {
+                        let string = value.as_str().unwrap();
+
                         if string.starts_with("__symbol__") {
                             self.write_symbol(string.into());
                         } else {
+                            if !self.objects.contains_key(&value) {
+                                self.objects.insert(value.clone(), self.objects.len());
+                            }
+
                             self.write_byte(Constants::InstanceVar as u8);
                             self.write_byte(Constants::String as u8);
-                            self.write_string(string.as_str());
+                            self.write_string(string);
                             self.write_number(1);
                             self.write_symbol(ENCODING_SHORT_SYMBOL.into());
                             self.write_byte(Constants::True as u8);

@@ -60,6 +60,24 @@ fn bignum_positive() {
         ),
         json!({"__type": "bigint", "value": BigUint::from_str("36893488147419103232").unwrap().to_string()})
     );
+
+    assert_eq!(
+        load(
+            b"\x04\x08l+\n\x00\x00\x00\x00\x00\x00\x00\x00\x04\x00",
+            None,
+            None
+        ),
+        json!({"__type": "bigint", "value": BigUint::from_str("73786976294838206464").unwrap().to_string()})
+    );
+
+    assert_eq!(
+        load(
+            b"\x04\x08l+\n\x00\x00\x00\x00\x00\x00\x00\x00\x08\x00",
+            None,
+            None
+        ),
+        json!({"__type": "bigint", "value": BigUint::from_str("147573952589676412928").unwrap().to_string()})
+    );
 }
 
 #[test]
@@ -142,6 +160,18 @@ fn string_binary() {
 fn invalid_string() {
     // length of string is 4, which is equal to 0x09, but 0x10 length is passed
     load(b"\x04\x08\"\x10\xf0(\x8c(", None, None);
+}
+
+#[test]
+fn links() {
+    assert_eq!(
+        load(
+            b"\x04\x08[\x08[\x08f\x080.1@\x07@\x07[\x08f\x080.2@\x09@\x09[\x08f\x080.3@\x0b@\x0b",
+            None,
+            None
+        ),
+        json!([[0.1, 0.1, 0.1], [0.2, 0.2, 0.2], [0.3, 0.3, 0.3]])
+    )
 }
 
 #[test]

@@ -1,17 +1,23 @@
+//!# marshal-rs
+//!
 //!**`marshal-rs` is a Rust implementation of Ruby-lang's `Marshal`.**
 //!
-//! This project is essentially just [@savannstm/marshal](https://github.com/savannstm/marshal), rewritten using Rust.
-//! It is capable of **_BLAZINGLY FAST_** loading dumped from Ruby Marshal files, as well as **_BLAZINGLY FAST_** dumping them back to Marshal format.
+//!This project is essentially just [@savannstm/marshal](https://github.com/savannstm/marshal), rewritten using Rust.
+//!It is capable of :fire: **_BLAZINGLY FAST_** loading dumped from Ruby Marshal files, as well as :fire: **_BLAZINGLY FAST_** dumping them back to Marshal format.
 //!
-//! # Quick overview
+//!## Installation
 //!
-//! This crate has two main functions: `load()` and `dump()`.
+//!`cargo add marshal-rs`
 //!
-//! `load()` takes a `&[u8]`, consisting of Marshal data bytes (that can be read using std::fs::read()) as its only argument, and outputs serde_json::Value (sonic_rs::Value, if "sonic" feature is enabled).
+//!## Quick overview
 //!
-//! `dump()` takes a `Value` as its only argument, and outputs Vec\<u8\>, consisting of Marshal bytes.
+//!This crate has two main functions: `load()` and `dump()`.
 //!
-//! If serializes Ruby data to JSON using the table:
+//!`load()` takes a `&[u8]`, consisting of Marshal data bytes (that can be read using `std::fs::read()`) as its only argument, and outputs `serde_json::Value` (`sonic_rs::Value`, if `sonic` feature is enabled).
+//!
+//!`dump()`, in turn, takes `Value` as its only argument and serializes it back to `Vec<u8>` Marshal byte stream. It does not preserve strings' initial encoding, writing all strings as UTF-8 encoded.
+//!
+//!If serializes Ruby data to JSON using the table:
 //!
 //!| Ruby object                                    | Serialized to JSON                                                        |
 //!| ---------------------------------------------- | ------------------------------------------------------------------------- |
@@ -26,59 +32,72 @@
 //!| `{}` (Hash)                                    | `{}` (Plain object)                                                       |
 //!| `Object.new` (Including structs, modules etc.) | `{ "__class": "__symbol__Object", "__type": "object" }` (Plain object)    |
 //!
-//! ## Strings
+//!### Strings
 //!
-//! By default, Ruby strings, that include encoding instance variable, are serialized to JSON strings, and those which don't, serialized to `{ __type: "bytes", data: [...] }` objects.
+//!By default, Ruby strings, that include encoding instance variable, are serialized to JSON strings, and those which don't, serialized to `{ __type: "bytes", data: [...] }` objects.
 //!
-//! This behavior can be controlled with `string_mode` argument of load() function.
+//!This behavior can be controlled with `string_mode` argument of `load()` function.
 //!
-//! `StringMode::UTF8` tries to convert arrays without instance variable to string, and produces string if array is valid UTF8, and object otherwise.
+//!`StringMode::UTF8` tries to convert arrays without instance variable to string, and produces string if array is valid UTF8, and object otherwise.
 //!
-//! `StringMode::Binary` converts all strings to objects.
+//!`StringMode::Binary` converts all strings to objects.
 //!
-//!## Objects and Symbols
+//!### Objects and Symbols
 //!
-//! For objects, that cannot be serialized in JSON (such as Objects and Symbols), `marshal-rs` uses approach of stringifying and adding prefixes and properties. It stringifyies symbols and prefixes them with `__symbol__`, and serializes objects' classes and types as `__class` keys and `__type` keys respectively.
+//!For objects, that cannot be serialized in JSON (such as Objects and Symbols), `marshal-rs` uses approach of stringifying and adding prefixes and properties. It stringifyies symbols and prefixes them with `__symbol__`, and serializes objects' classes and types as `__class` keys and `__type` keys respectively.
 //!
-//! ## Hash keys
+//!### Hash keys
 //!
-//! For Hash keys, that in Ruby may be represented using Integer, Float, Object etc, `marshal-rs` tries to preserve key type with prefixing stringifiyed key with it type. For example, Ruby `{1 => nil}` Hash will be converted to `{"__integer__1": null}` object.
+//!For Hash keys, that in Ruby may be represented using `Integer`, `Float`, `Object` etc, `marshal-rs` tries to preserve key type with prefixing stringifiyed key with it type. For example, Ruby `{1 => nil}` Hash will be converted to `{"__integer__1": null}` object.
 //!
-//! load(), in turn, takes serialized JSON object and serializes it back to Ruby Marshal format. It does not preserve strings' initial encoding, writing all strings as UTF-8 encoded, as well as does not writes links, which effectively means that output Marshal data might be larger in size than initial.
+//!### Instance variables
 //!
-//! ## Instance variables
+//!Instance variables always decoded as strings with `__symbol__` prefix.
+//!You can manage the prefix of instance variables using `instance_var_prefix` argument in `load()` and `dump()`. Passed string replaces "@" instance variables' prefixes.
 //!
-//! Instance variables always decoded as strings with "\_\_symbol\_\_" prefix.
-//! You can manage the prefix of instance variables using `instance_var_prefix` argument in load() and dump(). Passed string replaces "@" instance variables' prefixes.
+//!### Unsafe code
 //!
-//! # Quick example
+//!This code uses UnsafeCell along with unsafe blocks multiple times in load() function.
+//!However, in current implementation, this unsafe code will NOT ever cause any data races or instabilities.
 //!
-//! ```rust
-//! use std::fs::read;
-//! use marshal_rs::load::load;
-//! use marshal_rs::dump::dump;
+//!## Quick example
 //!
-//! fn main() {
-//!    // Read marshal data
-//!    let marshal_data: Vec<u8> = read("./marshal_file.marshal").unwrap();
+//!```rust
+//!use std::fs::read;
+//!use marshal_rs::load::load;
+//!use marshal_rs::dump::dump;
 //!
-//!    // Serializing to json
-//!    // load() takes a &[u8] as argument, so bytes Vec must be borrowed
-//!    let serialized_to_json: serde_json::Value = load(&marshal_data, None, None);
+//!fn main() {
+//!// Read marshal data
+//!let marshal_data: Vec<u8> = read("./marshal_file.marshal").unwrap();
 //!
-//!    // Here you may std::fs::write() serialized JSON to file
+//!// Serializing to json
+//!// load() takes a &[u8] as argument, so bytes Vec must be borrowed
+//!let serialized_to_json: serde_json::Value = load(&marshal_data, None, None);
 //!
-//!    // Serializing back to marshal
-//!    // dump() requires owned Value as argument
-//!    let serialized_to_marshal: Vec<u8> = dump(serialized_to_json, None);
+//!// Here you may std::fs::write() serialized JSON to file
 //!
-//!    // Here you may std::fs::write() serialized Marshal data to file
-//! }
-//! ```
+//!// Serializing back to marshal
+//!// dump() requires owned Value as argument
+//!let serialized_to_marshal: Vec<u8> = dump(serialized_to_json, None);
 //!
-//! # MSRV
+//!// Here you may std::fs::write() serialized Marshal data to file
+//!}
+//!```
 //!
-//! Minimum supported Rust version is 1.63.0.
+//!## MSRV
+//!
+//!Minimum supported Rust version is 1.63.0.
+//!
+//!## References
+//!
+//!-   [Official documentation for Marshal format](https://docs.ruby-lang.org/en/master/marshal_rdoc.html)
+//!-   [TypeScript implementation of Marshal](https://github.com/hyrious/marshal)
+//!-   [marshal.c](https://github.com/ruby/ruby/blob/master/marshal.c)
+//!
+//!## License
+//!
+//!Project is licensed under WTFPL.
 
 #[allow(dead_code)]
 #[repr(u8)]
@@ -114,9 +133,8 @@ enum Constants {
 
     // Regular expression flags
     RegexpIgnore = 1,
+    RegexpExtended = 2,
     RegexpMultiline = 4,
-    RegexpBoth = 5,
-    RegexpNone = 0,
 }
 
 impl std::ops::BitAnd<Constants> for u8 {

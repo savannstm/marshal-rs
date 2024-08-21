@@ -50,6 +50,22 @@ fn bignum_positive() {
         ),
         b"\x04\x08l+\n\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00"
     );
+
+    assert_eq!(
+        dump(
+            json!({"__type": "bigint", "value": BigUint::from_str("73786976294838206464").unwrap().to_string()}),
+            None,
+        ),
+        b"\x04\x08l+\n\x00\x00\x00\x00\x00\x00\x00\x00\x04\x00"
+    );
+
+    assert_eq!(
+        dump(
+            json!({"__type": "bigint", "value": BigUint::from_str("147573952589676412928").unwrap().to_string()}),
+            None,
+        ),
+        b"\x04\x08l+\n\x00\x00\x00\x00\x00\x00\x00\x00\x08\x00"
+    );
 }
 
 #[test]
@@ -117,6 +133,17 @@ fn string_binary() {
             None
         ),
         b"\x04\x08\"\x01\xdcLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong stringLong string",
+    )
+}
+
+#[test]
+fn links() {
+    assert_eq!(
+        dump(
+            json!([[0.1, 0.1, 0.1], [0.2, 0.2, 0.2], [0.3, 0.3, 0.3]]),
+            None,
+        ),
+        b"\x04\x08[\x08[\x08f\x080.1@\x07@\x07[\x08f\x080.2@\x09@\x09[\x08f\x080.3@\x0b@\x0b"
     )
 }
 

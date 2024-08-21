@@ -1,6 +1,6 @@
 [package]
 name = "marshal-rs"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["savannstm <savannstm@gmail.com>"]
 edition = "2021"
 rust-version = "1.63.0"
@@ -18,8 +18,8 @@ default = ["dep:serde_json"]
 cfg-if = "1.0.0"
 encoding_rs = "0.8.34"
 num-bigint = "0.4.6"
-serde_json = { version = "1.0.121", optional = true, features = ["preserve_order"] }
-sonic-rs = { version = "0.3.9", optional = true }
+serde_json = { version = "1.0.125", optional = true, features = ["preserve_order"] }
+sonic-rs = { version = "0.3.11", optional = true }
 
 [dev-dependencies]
 rayon = "1.10.0"
