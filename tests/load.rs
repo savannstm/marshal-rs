@@ -1,7 +1,6 @@
 #![allow(clippy::approx_constant)]
 use cfg_if::cfg_if;
 use marshal_rs::load::{load, StringMode};
-use num_bigint::{BigInt, BigUint};
 cfg_if! {
     if #[cfg(feature = "sonic")] {
         use sonic_rs::json;
@@ -9,7 +8,6 @@ cfg_if! {
         use serde_json::json;
     }
 }
-use std::str::FromStr;
 
 #[test]
 #[should_panic(expected = "Incompatible Marshal file format or version.")]
@@ -25,17 +23,17 @@ fn null() {
 #[test]
 fn boolean() {
     assert_eq!(load(b"\x04\x08T", None, None), json!(true));
-    assert_eq!(load(b"\x04\x08F", None, None), json!(false))
+    assert_eq!(load(b"\x04\x08F", None, None), json!(false));
 }
 
 #[test]
 fn fixnum_positive() {
-    assert_eq!(load(b"\x04\x08i\x00", None, None), json!(0));
+    assert_eq!(load(b"\x04\x08i\0", None, None), json!(0));
     assert_eq!(load(b"\x04\x08i\x0A", None, None), json!(5));
     assert_eq!(load(b"\x04\x08i\x02\x2C\x01", None, None), json!(300));
     assert_eq!(load(b"\x04\x08i\x03\x70\x11\x01", None, None), json!(70000));
     assert_eq!(
-        load(b"\x04\x08i\x04\x00\x00\x00\x01", None, None),
+        load(b"\x04\x08i\x04\0\0\0\x01", None, None),
         json!(16777216)
     );
 }
@@ -48,48 +46,43 @@ fn fixnum_negative() {
         load(b"\x04\x08i\xFD\x90\xEE\xFE", None, None),
         json!(-70000)
     );
+    assert_eq!(load(b"\x04\x08i\xFD\0\0\0", None, None), json!(-16777216));
 }
 
 #[test]
 fn bignum_positive() {
     assert_eq!(
-        load(
-            b"\x04\x08l+\n\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00",
-            None,
-            None
-        ),
-        json!({"__type": "bigint", "value": BigUint::from_str("36893488147419103232").unwrap().to_string()})
+        load(b"\x04\x08l+\n\0\0\0\0\0\0\0\0\x02\0", None, None),
+        json!({"__type": "bigint", "value": "36893488147419103232"})
     );
 
     assert_eq!(
-        load(
-            b"\x04\x08l+\n\x00\x00\x00\x00\x00\x00\x00\x00\x04\x00",
-            None,
-            None
-        ),
-        json!({"__type": "bigint", "value": BigUint::from_str("73786976294838206464").unwrap().to_string()})
+        load(b"\x04\x08l+\n\0\0\0\0\0\0\0\0\x04\0", None, None),
+        json!({"__type": "bigint", "value": "73786976294838206464"})
     );
 
     assert_eq!(
-        load(
-            b"\x04\x08l+\n\x00\x00\x00\x00\x00\x00\x00\x00\x08\x00",
-            None,
-            None
-        ),
-        json!({"__type": "bigint", "value": BigUint::from_str("147573952589676412928").unwrap().to_string()})
+        load(b"\x04\x08l+\n\0\0\0\0\0\0\0\0\x08\0", None, None),
+        json!({"__type": "bigint", "value": "147573952589676412928"})
     );
 }
 
 #[test]
 fn bignum_negative() {
     assert_eq!(
-        load(
-            b"\x04\x08l-\n\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00",
-            None,
-            None
-        ),
-        json!({"__type": "bigint", "value": BigInt::from_str("-36893488147419103232").unwrap().to_string()})
-    )
+        load(b"\x04\x08l-\n\0\0\0\0\0\0\0\0\x02\0", None, None),
+        json!({"__type": "bigint", "value": "-36893488147419103232"})
+    );
+
+    assert_eq!(
+        load(b"\x04\x08l-\n\0\0\0\0\0\0\0\0\x04\0", None, None),
+        json!({"__type": "bigint", "value": "-73786976294838206464"})
+    );
+
+    assert_eq!(
+        load(b"\x04\x08l-\n\0\0\0\0\0\0\0\0\x08\0", None, None),
+        json!({"__type": "bigint", "value": "-147573952589676412928"})
+    );
 }
 
 #[test]
@@ -119,7 +112,7 @@ fn string_utf8() {
             None, None
         ),
         "Long string".repeat(20),
-    )
+    );
 }
 
 #[test]
@@ -131,7 +124,7 @@ fn string_nonutf8() {
             None
         ),
         json!("汉字内")
-    )
+    );
 }
 
 #[test]
@@ -152,7 +145,7 @@ fn string_binary() {
             None
         ),
         json!({"__type": "bytes", "data": "Long string".repeat(20).as_bytes()}),
-    )
+    );
 }
 
 #[test]
@@ -171,7 +164,7 @@ fn links() {
             None
         ),
         json!([[0.1, 0.1, 0.1], [0.2, 0.2, 0.2], [0.3, 0.3, 0.3]])
-    )
+    );
 }
 
 #[test]
@@ -183,14 +176,14 @@ fn array() {
             None
         ),
         json!([1, "two", 3.0, [4], {"__integer__5": 6}])
-    )
+    );
 }
 
 #[test]
 fn hash() {
     assert_eq!(
         load(
-            b"\x04\x08{\x08i\x06I\"\x08one\x06:\x06ETI\"\x08two\x06;\x00Ti\x07o:\x0bObject\x000",
+            b"\x04\x08{\x08i\x06I\"\x08one\x06:\x06ETI\"\x08two\x06;\0Ti\x07o:\x0bObject\x000",
             None,
             None
         ),
@@ -198,9 +191,9 @@ fn hash() {
     );
 
     assert_eq!(
-        load(b"\x04\x08}\x00I\"\x0cdefault\x06:\x06ET", None, None),
+        load(b"\x04\x08}\0I\"\x0cdefault\x06:\x06ET", None, None),
         json!({"__ruby_default__": "default"})
-    )
+    );
 }
 
 #[test]
@@ -212,7 +205,7 @@ fn ruby_struct() {
             None
         ),
         json!({"__class": "__symbol__Person", "__members": {"__symbol__age": 30, "__symbol__name": "Alice"}, "__type": "struct"})
-    )
+    );
 }
 
 #[test]
@@ -224,5 +217,5 @@ fn object() {
             None
         ),
         json!({"__class": "__symbol__CustomObject", "__symbol__@data": "object data", "__type": "object"})
-    )
+    );
 }
