@@ -412,14 +412,13 @@ impl<'a> Loader<'a> {
                     let key: Value = unsafe { &*self.read_next().borrow().get() }.clone();
                     let value: Value = unsafe { &*self.read_next().borrow().get() }.clone();
 
-                    let key_str: &str = key.as_str().unwrap();
-                    rc.borrow_mut().get_mut()[key_str
-                        .replacen(
-                            "__symbol__@",
-                            self.instance_var_prefix.unwrap_or("__symbol__@"),
-                            1,
-                        )
-                        .as_str()] = value;
+                    let mut key_str: String = key.as_str().unwrap().to_string();
+
+                    if let Some(prefix) = self.instance_var_prefix {
+                        key_str.replace_range(10..11, prefix)
+                    }
+
+                    rc.borrow_mut().get_mut()[key_str] = value;
                 }
 
                 rc

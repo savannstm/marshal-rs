@@ -267,6 +267,12 @@ impl<'a> Dumper<'a> {
 
         if object_length > 0 {
             for (key, value) in object.iter_mut() {
+                let mut key = key.to_owned();
+
+                if let Some(prefix) = self.instance_var_prefix {
+                    key.replace_range(10..10 + prefix.len(), "@");
+                }
+
                 let key_string: String =
                     key.replacen(self.instance_var_prefix.unwrap_or("@"), "@", 1);
 
