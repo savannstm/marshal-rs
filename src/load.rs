@@ -418,7 +418,7 @@ impl<'a> Loader<'a> {
                         key_str.replace_range(10..11, prefix)
                     }
 
-                    rc.borrow_mut().get_mut()[key_str] = value;
+                    rc.borrow_mut().get_mut()[key_str.as_str()] = value;
                 }
 
                 rc
