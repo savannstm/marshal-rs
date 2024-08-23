@@ -184,13 +184,7 @@ impl<'a> Loader<'a> {
                 let prefix: String = String::from("__symbol__");
                 let symbol: &String = &self.read_string();
 
-                cfg_if! {
-                    if #[cfg(feature = "sonic")] {
-                        let symbol: Value = ((prefix + symbol).as_str()).into();
-                    } else {
-                        let symbol: Value = (prefix + symbol).into();
-                    }
-                }
+                let symbol: Value = ((prefix + symbol).as_str()).into();
 
                 let rc = Rc::from(RefCell::from(UnsafeCell::from(symbol)));
                 self.symbols.push(rc.clone());
@@ -412,13 +406,13 @@ impl<'a> Loader<'a> {
                     let key: Value = unsafe { &*self.read_next().borrow().get() }.clone();
                     let value: Value = unsafe { &*self.read_next().borrow().get() }.clone();
 
-                    let mut key_str: String = key.as_str().unwrap().to_string();
+                    let mut key_string: String = key.as_str().unwrap().to_string();
 
                     if let Some(prefix) = self.instance_var_prefix {
-                        key_str.replace_range(10..11, prefix)
+                        key_string.replace_range(10..11, prefix)
                     }
 
-                    rc.borrow_mut().get_mut()[key_str.as_str()] = value;
+                    rc.borrow_mut().get_mut()[key_string.as_str()] = value;
                 }
 
                 rc

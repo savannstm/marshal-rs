@@ -274,10 +274,7 @@ impl<'a> Dumper<'a> {
                     key.replace_range(10..10 + prefix.len(), "@");
                 }
 
-                let key_string: String =
-                    key.replacen(self.instance_var_prefix.unwrap_or("@"), "@", 1);
-
-                self.write_symbol(key_string.as_str().into());
+                self.write_symbol(key.as_str().into());
                 self.write_structure(value.take());
             }
         }
