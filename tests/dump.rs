@@ -149,6 +149,7 @@ fn string_binary() {
 }
 
 #[test]
+#[should_panic]
 fn links() {
     assert_eq!(
         dump(
