@@ -79,6 +79,7 @@ impl<'a> Dumper<'a> {
         self.write_buffer(&MARSHAL_VERSION.to_be_bytes());
         self.write_structure(value);
 
+        self.objects.clear();
         self.symbols.clear();
         self.instance_var_prefix = None;
 
@@ -285,11 +286,11 @@ impl<'a> Dumper<'a> {
     fn write_structure(&mut self, mut value: Value) {
         cfg_if! {
             if #[cfg(feature = "sonic")] {
-                if let Some(value) = self.objects.iter().position(|val| *val == value) {
+                /*if let Some(value) = self.objects.iter().position(|val| *val == value) {
                     self.write_byte(Constants::Link as u8);
                     self.write_number(value as i32);
                     return;
-                }
+                }*/
 
                 match value.get_type() {
                     JsonType::Null => self.write_byte(Constants::Nil as u8),
@@ -307,9 +308,9 @@ impl<'a> Dumper<'a> {
                             self.write_byte(Constants::Fixnum as u8);
                             self.write_number(integer as i32);
                         } else if let Some(float) = value.as_f64() {
-                            if !self.objects.contains(&value) {
+                            /*if !self.objects.contains(&value) {
                                 self.objects.push(value);
-                            }
+                            }*/
 
                             self.write_byte(Constants::Float as u8);
                             self.write_float(float);
@@ -321,17 +322,17 @@ impl<'a> Dumper<'a> {
                                 "bytes" => {
                                     let buf: Vec<u8> = from_value(&value["data"]).unwrap();
 
-                                    if !self.objects.contains(&value["data"]) {
+                                    /*if !self.objects.contains(&value["data"]) {
                                         self.objects.push(value["data"].take());
-                                    }
+                                    }*/
 
                                     self.write_byte(Constants::String as u8);
                                     self.write_bytes(&buf);
                                 }
                                 "object" => {
-                                    if !self.objects.contains(&value) {
+                                    /*if !self.objects.contains(&value) {
                                         self.objects.push(value.clone());
-                                    }
+                                    } */
 
                                     if value.get("__data").is_some() {
                                         self.write_class(Constants::Data, &mut value);
@@ -372,25 +373,25 @@ impl<'a> Dumper<'a> {
                                     }
                                 }
                                 "struct" => {
-                                    if !self.objects.contains(&value) {
+                                    /*if !self.objects.contains(&value) {
                                         self.objects.push(value.clone());
-                                    }
+                                    } */
 
                                     self.write_class(Constants::Struct, &mut value);
                                     self.write_instance_var(value["__members"].take());
                                 }
                                 "class" => {
-                                    if !self.objects.contains(&value) {
+                                    /*if !self.objects.contains(&value) {
                                         self.objects.push(value.clone());
-                                    }
+                                    } */
 
                                     self.write_byte(Constants::Class as u8);
                                     self.write_string(value["__name"].take().as_str().unwrap());
                                 }
                                 "module" => {
-                                    if !self.objects.contains(&value) {
+                                    /*if !self.objects.contains(&value) {
                                         self.objects.push(value.clone());
-                                    }
+                                    } */
 
                                     self.write_byte(
                                         if value.get("__old").is_true() {
@@ -403,9 +404,9 @@ impl<'a> Dumper<'a> {
                                     self.write_string(value["__name"].take().as_str().unwrap());
                                 },
                                 "regexp" => {
-                                    if !self.objects.contains(&value) {
+                                    /*if !self.objects.contains(&value) {
                                         self.objects.push(value.clone());
-                                    }
+                                    } */
 
                                     self.write_byte(Constants::Regexp as u8);
                                     self.write_string(value["expression"].as_str().unwrap());
@@ -428,9 +429,9 @@ impl<'a> Dumper<'a> {
                                     self.write_byte(options as u8);
                                 }
                                 "bigint" => {
-                                    if !self.objects.contains(&value) {
+                                    /*if !self.objects.contains(&value) {
                                         self.objects.push(value.clone());
-                                    }
+                                    } */
 
                                     let bigint = BigInt::from_str(value["value"].as_str().unwrap()).unwrap();
                                     self.write_bignum(bigint);
@@ -438,9 +439,9 @@ impl<'a> Dumper<'a> {
                                 _ => unreachable!()
                             }
                         } else {
-                            if !self.objects.contains(&value) {
+                            /*if !self.objects.contains(&value) {
                                 self.objects.push(value.clone());
-                            }
+                            } */
 
                             let object: &mut Object = value.as_object_mut().unwrap();
                             let default_value: Option<Value> = object
@@ -493,9 +494,9 @@ impl<'a> Dumper<'a> {
                         }
                     }
                     JsonType::Array => {
-                        if !self.objects.contains(&value) {
+                        /*if !self.objects.contains(&value) {
                             self.objects.push(value.clone());
-                        }
+                        } */
 
                         let array: &mut Array = value.as_array_mut().unwrap();
                         self.write_byte(Constants::Array as u8);
@@ -511,9 +512,9 @@ impl<'a> Dumper<'a> {
                         if string.starts_with("__symbol__") {
                             self.write_symbol(string.into());
                         } else {
-                            if !self.objects.contains(&value) {
+                            /*if !self.objects.contains(&value) {
                                 self.objects.push(value.clone());
-                            }
+                            } */
 
                             self.write_byte(Constants::InstanceVar as u8);
                             self.write_byte(Constants::String as u8);
@@ -525,11 +526,11 @@ impl<'a> Dumper<'a> {
                     }
                 }
             } else {
-                if let Some(&value) = self.objects.get(&value) {
+                /*if let Some(&value) = self.objects.get(&value) {
                     self.write_byte(Constants::Link as u8);
                     self.write_number(value as i32);
                     return;
-                }
+                } */
 
                 match value {
                     Value::Null => self.write_byte(Constants::Nil as u8),
@@ -547,9 +548,9 @@ impl<'a> Dumper<'a> {
                             self.write_byte(Constants::Fixnum as u8);
                             self.write_number(integer as i32);
                         } else if let Some(float) = value.as_f64() {
-                            if !self.objects.contains_key(&value) {
+                            /*if !self.objects.contains_key(&value) {
                                 self.objects.insert(value, self.objects.len());
-                            }
+                            } */
 
                             self.write_byte(Constants::Float as u8);
                             self.write_float(float);
@@ -561,17 +562,13 @@ impl<'a> Dumper<'a> {
                                 "bytes" => {
                                     let buf: Vec<u8> = from_value(value["data"].clone()).unwrap();
 
-                                    if !self.objects.contains_key(&value["data"]) {
-                                        self.objects.insert(value["data"].take(), self.objects.len());
-                                    }
+                                    //self.objects.insert(value["data"].take(), self.objects.len());
 
                                     self.write_byte(Constants::String as u8);
                                     self.write_bytes(&buf);
                                 }
                                 "object" => {
-                                    if !self.objects.contains_key(&value) {
-                                        self.objects.insert(value.clone(), self.objects.len());
-                                    }
+                                    //self.objects.insert(value.clone(), self.objects.len());
 
                                     if value.get("__data").is_some() {
                                         self.write_class(Constants::Data, &mut value);
@@ -613,25 +610,19 @@ impl<'a> Dumper<'a> {
                                     }
                                 }
                                 "struct" => {
-                                    if !self.objects.contains_key(&value) {
-                                        self.objects.insert(value.clone(), self.objects.len());
-                                    }
+                                    //self.objects.insert(value.clone(), self.objects.len());
 
                                     self.write_class(Constants::Struct, &mut value);
                                     self.write_instance_var(value["__members"].take());
                                 }
                                 "class" => {
-                                    if !self.objects.contains_key(&value) {
-                                        self.objects.insert(value.clone(), self.objects.len());
-                                    }
+                                    //self.objects.insert(value.clone(), self.objects.len());
 
                                     self.write_byte(Constants::Class as u8);
                                     self.write_string(value["__name"].take().as_str().unwrap());
                                 }
                                 "module" => {
-                                    if !self.objects.contains_key(&value) {
-                                        self.objects.insert(value.clone(), self.objects.len());
-                                    }
+                                    //self.objects.insert(value.clone(), self.objects.len());
 
                                     self.write_byte(
                                         if let Some(old) = value.get("__old") {
@@ -648,9 +639,7 @@ impl<'a> Dumper<'a> {
                                     self.write_string(value["__name"].take().as_str().unwrap());
                                 },
                                 "regexp" => {
-                                    if !self.objects.contains_key(&value) {
-                                        self.objects.insert(value.clone(), self.objects.len());
-                                    }
+                                    //self.objects.insert(value.clone(), self.objects.len());
 
                                     self.write_byte(Constants::Regexp as u8);
                                     self.write_string(value["expression"].as_str().unwrap());
@@ -673,9 +662,9 @@ impl<'a> Dumper<'a> {
                                     self.write_byte(options);
                                 }
                                 "bigint" => {
-                                    if !self.objects.contains_key(&value) {
+                                    /*if !self.objects.contains_key(&value) {
                                         self.objects.insert(value.clone(), self.objects.len());
-                                    }
+                                    } */
 
                                     let bigint = BigInt::from_str(value["value"].as_str().unwrap()).unwrap();
                                     self.write_bignum(bigint);
@@ -683,9 +672,7 @@ impl<'a> Dumper<'a> {
                                 _ => unreachable!()
                             }
                         } else {
-                            if !self.objects.contains_key(&value) {
-                                self.objects.insert(value.clone(), self.objects.len());
-                            }
+                            //self.objects.insert(value.clone(), self.objects.len());
 
                             let object = value.as_object_mut().unwrap();
                             let default_value: Option<Value> = object
@@ -738,9 +725,6 @@ impl<'a> Dumper<'a> {
                         }
                     }
                     Value::Array(_) => {
-                        if !self.objects.contains_key(&value) {
-                            self.objects.insert(value.clone(), self.objects.len());
-                        }
 
                         let array = value.as_array_mut().unwrap();
                         self.write_byte(Constants::Array as u8);
@@ -756,9 +740,9 @@ impl<'a> Dumper<'a> {
                         if string.starts_with("__symbol__") {
                             self.write_symbol(string.into());
                         } else {
-                            if !self.objects.contains_key(&value) {
+                            /*if !self.objects.contains_key(&value) {
                                 self.objects.insert(value.clone(), self.objects.len());
-                            }
+                            } */
 
                             self.write_byte(Constants::InstanceVar as u8);
                             self.write_byte(Constants::String as u8);
