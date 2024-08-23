@@ -17,6 +17,10 @@ This crate has two main functions: `load()` and `dump()`.
 
 `dump()`, in turn, takes `Value` as its only argument and serializes it back to `Vec<u8>` Marshal byte stream. It does not preserve strings' initial encoding, writing all strings as UTF-8 encoded.
 
+### Note
+
+`marshal-rs` does **NOT** write object links. That means that the output file size may be larger than initial. Otherwise, it has no effect on output file. I **really** do need help with object links writing. If you're a Ruby/Rust sénior and a megamind in terms of Marshal format, consider submitting a pull request to this repository or whatever.
+
 If serializes Ruby data to JSON using the table:
 
 | Ruby object                                    | Serialized to JSON                                                        |
