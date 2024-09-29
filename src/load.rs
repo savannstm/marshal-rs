@@ -30,14 +30,6 @@ pub struct LoadError {
     message: String,
 }
 
-impl LoadError {
-    fn new(message: &str) -> Self {
-        LoadError {
-            message: message.to_string(),
-        }
-    }
-}
-
 impl std::fmt::Display for LoadError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(formatter, "{}", self.message)
@@ -107,15 +99,17 @@ impl<'a> Loader<'a> {
         let marshal_version: u16 = u16::from_be_bytes(if let Some(bytes) = self.buffer.get(0..2) {
             bytes.try_into().unwrap()
         } else {
-            return Err(LoadError::new(
-                "Marshal data is too short. Wasn't even able to read starting version bytes.",
-            ));
+            return Err(LoadError {
+                message: "Marshal data is too short. Wasn't even able to read starting version \
+                          bytes."
+                    .to_string(),
+            });
         });
 
         if marshal_version != MARSHAL_VERSION {
-            return Err(LoadError::new(
-                "Incompatible Marshal file format or version.",
-            ));
+            return Err(LoadError {
+                message: "Incompatible Marshal file format or version.".to_string(),
+            });
         }
 
         self.byte_position += 2;
@@ -146,10 +140,12 @@ impl<'a> Loader<'a> {
         {
             bytes
         } else {
-            return Err(LoadError::new(&format!(
-                "Marshal data is too short. Last position: {}",
-                self.byte_position
-            )));
+            return Err(LoadError {
+                message: format!(
+                    "Marshal data is too short. Last position: {}",
+                    self.byte_position
+                ),
+            });
         };
 
         self.byte_position += amount;
