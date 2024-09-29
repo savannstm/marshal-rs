@@ -3,7 +3,7 @@
 //!**`marshal-rs` is a Rust implementation of Ruby-lang's `Marshal`.**
 //!
 //!This project is essentially just [@savannstm/marshal](https://github.com/savannstm/marshal), rewritten using Rust.
-//!It is capable of :fire: **_BLAZINGLY FAST_** loading dumped from Ruby Marshal files, as well as :fire: **_BLAZINGLY FAST_** dumping them back to Marshal format.
+//!It is capable of :fire: **_BLAZINGLY FAST_** loading data from dumped Ruby Marshal files, as well as :fire: **_BLAZINGLY FAST_** dumping it back to Marshal format.
 //!
 //!## Installation
 //!
