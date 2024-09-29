@@ -1,13 +1,9 @@
 #![allow(clippy::approx_constant)]
-use cfg_if::cfg_if;
 use marshal_rs::dump::dump;
-cfg_if! {
-    if #[cfg(feature = "sonic")] {
-        use sonic_rs::json;
-    } else {
-        use serde_json::json;
-    }
-}
+#[cfg(not(feature = "sonic"))]
+use serde_json::json;
+#[cfg(feature = "sonic")]
+use sonic_rs::json;
 
 #[test]
 fn null() {
