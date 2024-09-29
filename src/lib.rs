@@ -64,24 +64,26 @@
 //!
 //!```rust
 //!use std::fs::read;
-//!use marshal_rs::load::load;
-//!use marshal_rs::dump::dump;
+//!use marshal_rs::{load, dump};
 //!
 //!fn main() {
-//!// Read marshal data
-//!let marshal_data: Vec<u8> = read("./marshal_file.marshal").unwrap();
+//!    // Read marshal data from file
+//!    // let marshal_data: Vec<u8> = read("./Map001.rvdata2").unwrap();
+//!    // For this example, we'll just take pre-defined marshal data
+//!    let marshal_data: Vec<u8> = [0x04, 0x08, 0x30].to_vec();
 //!
-//!// Serializing to json
-//!// load() takes a &[u8] as argument, so bytes Vec must be borrowed
-//!let serialized_to_json: serde_json::Value = load(&marshal_data, None, None);
 //!
-//!// Here you may std::fs::write() serialized JSON to file
+//!    // Serializing to json
+//!    // load() takes a &[u8] as argument, so bytes Vec must be borrowed
+//!    let serialized_to_json: serde_json::Value = load(&marshal_data, None, None).unwrap();
 //!
-//!// Serializing back to marshal
-//!// dump() requires owned Value as argument
-//!let serialized_to_marshal: Vec<u8> = dump(serialized_to_json, None);
+//!    // Here you may std::fs::write() serialized JSON to file
 //!
-//!// Here you may std::fs::write() serialized Marshal data to file
+//!    // Serializing back to marshal
+//!    // dump() requires owned Value as argument
+//!    let serialized_to_marshal: Vec<u8> = dump(serialized_to_json, None);
+//!
+//!    // Here you may std::fs::write() serialized Marshal data to file
 //!}
 //!```
 //!
@@ -99,6 +101,7 @@
 //!
 //!Project is licensed under WTFPL.
 
+// Ruby object marks constants enum
 #[allow(dead_code)]
 #[repr(u8)]
 #[derive(PartialEq, Clone, Copy)]
@@ -151,11 +154,16 @@ impl PartialEq<Constants> for u8 {
     }
 }
 
+// Required constants
 const ENCODING_SHORT_SYMBOL: &str = "__symbol__E";
 const ENCODING_LONG_SYMBOL: &str = "__symbol__encoding";
 const EXTENDS_SYMBOL: &str = "__ruby_extends__";
 const DEFAULT_SYMBOL: &str = "__ruby_default__";
-const MARSHAL_VERSION: u16 = 0x0408;
+const MARSHAL_VERSION: u16 = 0x0408; // The latest and probably final version of Ruby Marshal is 4.8
 
 pub mod dump;
 pub mod load;
+
+// Convenient re-exports
+pub use dump::{dump, Dumper};
+pub use load::{load, Loader, StringMode};
