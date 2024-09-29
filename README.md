@@ -3,7 +3,7 @@
 **`marshal-rs` is a Rust implementation of Ruby-lang's `Marshal`.**
 
 This project is essentially just [@savannstm/marshal](https://github.com/savannstm/marshal), rewritten using Rust.
-It is capable of :fire: **_BLAZINGLY FAST_** loading dumped from Ruby Marshal files, as well as :fire: **_BLAZINGLY FAST_** dumping them back to Marshal format.
+It is capable of :fire: **_BLAZINGLY FAST_** loading data from dumped Ruby Marshal files, as well as :fire: **_BLAZINGLY FAST_** dumping it back to Marshal format.
 
 ## Installation
 
@@ -68,16 +68,17 @@ However, in current implementation, this unsafe code will NOT ever cause any dat
 
 ```rust
 use std::fs::read;
-use marshal_rs::load::load;
-use marshal_rs::dump::dump;
+use marshal_rs::{load, dump};
 
 fn main() {
-    // Read marshal data
-    let marshal_data: Vec<u8> = read("./marshal_file.marshal").unwrap();
+    // Read marshal data from file
+    // let marshal_data: Vec<u8> = read("./Map001.rvdata2").unwrap();
+    // For this example, we'll just take pre-defined marshal data
+    let marshal_data: Vec<u8> = [0x04, 0x08, 0x30].to_vec();
 
     // Serializing to json
     // load() takes a &[u8] as argument, so bytes Vec must be borrowed
-    let serialized_to_json: serde_json::Value = load(&marshal_data, None, None);
+    let serialized_to_json: serde_json::Value = load(&marshal_data, None, None).unwrap();
 
     // Here you may std::fs::write() serialized JSON to file
 

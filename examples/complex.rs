@@ -1,27 +1,23 @@
-use cfg_if::cfg_if;
-use marshal_rs::{dump::Dumper, load::Loader};
-cfg_if! {
-    if #[cfg(feature = "sonic")] {
-        use sonic_rs::json;
-    } else {
-        use serde_json::json;
-    }
-}
+use marshal_rs::{Dumper, Loader};
+#[cfg(not(feature = "sonic"))]
+use serde_json::json;
+#[cfg(feature = "sonic")]
+use sonic_rs::json;
 
 fn main() {
     // Bytes slice of Ruby Marshal data
     // Files with Marshal data can be read with std::fs::read()
-    let null: [u8; 3] = [0x04, 0x08, 0x30]; // null
-    let true_: [u8; 3] = [0x04, 0x08, 0x54]; // true
-    let false_: [u8; 3] = [0x04, 0x08, 0x46]; // false
+    let null_bytes: [u8; 3] = [0x04, 0x08, 0x30]; // null
+    let true_bytes: [u8; 3] = [0x04, 0x08, 0x54]; // true
+    let false_bytes: [u8; 3] = [0x04, 0x08, 0x46]; // false
 
     // Initialize the loader, might be more efficient to loading multiple files
     let mut loader: Loader = Loader::new();
 
     // Load the values of multiple objects
-    let null_value = loader.load(&null, None, None);
-    let true_value = loader.load(&true_, None, None);
-    let false_value = loader.load(&false_, None, None);
+    let null_value = loader.load(&null_bytes, None, None).unwrap();
+    let true_value = loader.load(&true_bytes, None, None).unwrap();
+    let false_value = loader.load(&false_bytes, None, None).unwrap();
 
     assert_eq!(null_value, json!(null));
     assert_eq!(true_value, json!(true));
@@ -37,9 +33,9 @@ fn main() {
     let true_marshal: Vec<u8> = dumper.dump(true_value, None);
     let false_marshal: Vec<u8> = dumper.dump(false_value, None);
 
-    assert_eq!(&null_marshal, &null);
-    assert_eq!(&true_marshal, &true_);
-    assert_eq!(&false_marshal, &false_);
+    assert_eq!(&null_marshal, &null_bytes);
+    assert_eq!(&true_marshal, &true_bytes);
+    assert_eq!(&false_marshal, &false_bytes);
 
     // Here you may write bytes back to the Marshal file
 }
