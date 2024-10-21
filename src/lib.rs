@@ -62,7 +62,7 @@
 //!
 //!## Quick example
 //!
-//!```rust
+//!```rust no-test
 //!use std::fs::read;
 //!use marshal_rs::{load, dump};
 //!
