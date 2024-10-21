@@ -200,11 +200,11 @@ impl<'a> Loader<'a> {
             Constants::Fixnum => Rc::from(UnsafeCell::from(Value::from(self.read_fixnum()?))),
             Constants::Symlink => {
                 let pos: i32 = self.read_fixnum()?;
-                self.symbols[pos as usize].clone()
+                Rc::clone(&self.symbols[pos as usize])
             }
             Constants::Link => {
                 let pos: i32 = self.read_fixnum()?;
-                self.objects[pos as usize].clone()
+                Rc::clone(&self.objects[pos as usize])
             }
             Constants::Symbol => {
                 let prefix: String = String::from("__symbol__");
@@ -546,18 +546,18 @@ impl<'a> Loader<'a> {
                 self.objects.push(rc.clone());
 
                 unsafe {
+                    let rc_ref: &mut Value = &mut *rc.get();
+
                     match structure_type {
-                        Constants::Data => {
-                            (*rc.get())["__data"] = (*self.read_next()?.get()).clone()
-                        }
+                        Constants::Data => rc_ref["__data"] = (*self.read_next()?.get()).clone(),
                         Constants::UserClass => {
-                            (*rc.get())["__wrapped"] = (*self.read_next()?.get()).clone()
+                            rc_ref["__wrapped"] = (*self.read_next()?.get()).clone()
                         }
                         Constants::UserDefined => {
-                            (*rc.get())["__userDefined"] = (self.read_chunk()?).into()
+                            rc_ref["__userDefined"] = (self.read_chunk()?).into()
                         }
                         Constants::UserMarshal => {
-                            (*rc.get())["__userMarshal"] = (*self.read_next()?.get()).clone()
+                            rc_ref["__userMarshal"] = (*self.read_next()?.get()).clone()
                         }
                         _ => unreachable!(),
                     }
