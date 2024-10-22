@@ -1,5 +1,5 @@
 #![allow(clippy::approx_constant)]
-use marshal_rs::load::{load, StringMode};
+use marshal_rs::{load, StringMode};
 #[cfg(not(feature = "sonic"))]
 use serde_json::json;
 #[cfg(feature = "sonic")]
