@@ -200,11 +200,11 @@ impl<'a> Loader<'a> {
             Constants::Fixnum => Rc::from(UnsafeCell::from(Value::from(self.read_fixnum()?))),
             Constants::Symlink => {
                 let pos: i32 = self.read_fixnum()?;
-                Rc::clone(&self.symbols[pos as usize])
+                self.symbols[pos as usize].clone()
             }
             Constants::Link => {
                 let pos: i32 = self.read_fixnum()?;
-                Rc::clone(&self.objects[pos as usize])
+                self.objects[pos as usize].clone()
             }
             Constants::Symbol => {
                 let prefix: String = String::from("__symbol__");
@@ -220,64 +220,61 @@ impl<'a> Loader<'a> {
                 let object: ComplexRc = self.read_next()?;
                 let size: i32 = self.read_fixnum()?;
 
-                unsafe {
-                    let object_ptr: &mut Value = &mut *object.get();
+                for _ in 0..size {
+                    let key: ComplexRc = self.read_next()?;
+                    let mut value: Option<Vec<u8>> = None;
 
-                    for _ in 0..size {
-                        let key: ComplexRc = self.read_next()?;
-                        let mut value: Option<Vec<u8>> = None;
+                    if let Some(data) = unsafe { &mut *self.read_next()?.get() }.get_mut("data") {
+                        #[cfg(feature = "sonic")]
+                        {
+                            value = from_value(data).unwrap();
+                        }
+                        #[cfg(not(feature = "sonic"))]
+                        {
+                            value = from_value(data.take()).unwrap();
+                        }
+                    }
 
-                        let key_ptr: &Value = &*key.get();
+                    if (unsafe { &*object.get() }["__type"].as_str().unwrap() == "bytes")
+                        && [
+                            Value::from(ENCODING_LONG_SYMBOL),
+                            Value::from(ENCODING_SHORT_SYMBOL),
+                        ]
+                        .contains(unsafe { &*key.get() })
+                        && self.string_mode != Some(StringMode::Binary)
+                    {
+                        let bytes: Value = unsafe { &*object.get() }["data"].clone();
+                        let array: Vec<u8>;
 
-                        if let Some(data) = (*self.read_next()?.get()).get_mut("data") {
-                            #[cfg(feature = "sonic")]
-                            {
-                                value = from_value(data).unwrap();
-                            }
-                            #[cfg(not(feature = "sonic"))]
-                            {
-                                value = from_value(data.take()).unwrap();
-                            }
+                        #[cfg(feature = "sonic")]
+                        {
+                            array = from_value(&bytes).unwrap()
+                        }
+                        #[cfg(not(feature = "sonic"))]
+                        {
+                            array = from_value(bytes).unwrap()
                         }
 
-                        if (object_ptr["__type"].as_str().unwrap() == "bytes")
-                            && [
-                                Value::from(ENCODING_LONG_SYMBOL),
-                                Value::from(ENCODING_SHORT_SYMBOL),
-                            ]
-                            .contains(key_ptr)
-                            && self.string_mode != Some(StringMode::Binary)
-                        {
-                            let bytes: Value = object_ptr["data"].clone();
-                            let array: Vec<u8>;
-
-                            #[cfg(feature = "sonic")]
-                            {
-                                array = from_value(&bytes).unwrap()
+                        if unsafe { &*key.get() } == ENCODING_SHORT_SYMBOL {
+                            unsafe {
+                                *object.get() = (std::str::from_utf8_unchecked(&array)).into();
                             }
-                            #[cfg(not(feature = "sonic"))]
-                            {
-                                array = from_value(bytes).unwrap()
-                            }
-
-                            if key_ptr == ENCODING_SHORT_SYMBOL {
-                                *object_ptr = (std::str::from_utf8_unchecked(&array)).into();
-                            } else {
-                                let (cow, _, _) = Encoding::for_label(&value.unwrap())
-                                    .unwrap_or(UTF_8)
-                                    .decode(&array);
-
+                        } else {
+                            let (cow, _, _) = Encoding::for_label(&value.unwrap())
+                                .unwrap_or(UTF_8)
+                                .decode(&array);
+                            unsafe {
                                 #[cfg(feature = "sonic")]
                                 {
-                                    *object_ptr = cow.into();
+                                    *object.get() = cow.into();
                                 }
                                 #[cfg(not(feature = "sonic"))]
                                 {
-                                    *object_ptr = (cow.into_owned()).into();
+                                    *object.get() = (cow.into_owned()).into();
                                 }
-
-                                *self.objects.last_mut().unwrap() = object.clone()
                             }
+
+                            *self.objects.last_mut().unwrap() = object.clone()
                         }
                     }
                 }
@@ -289,14 +286,13 @@ impl<'a> Loader<'a> {
                 let object: ComplexRc = self.read_next()?;
 
                 unsafe {
-                    let object_ref: &mut Value = &mut *object.get();
-
-                    if object_ref.is_object() && object_ref.get(EXTENDS_SYMBOL).is_none() {
-                        object_ref[EXTENDS_SYMBOL] = json!([]);
-                        object_ref[EXTENDS_SYMBOL]
+                    if (*object.get()).is_object() && (*object.get()).get(EXTENDS_SYMBOL).is_none()
+                    {
+                        (*object.get())[EXTENDS_SYMBOL] = json!([]);
+                        (*object.get())[EXTENDS_SYMBOL]
                             .as_array_mut()
                             .unwrap()
-                            .insert(0, (*symbol.get()).clone());
+                            .insert(0, (*symbol.get()).take());
                     }
                 }
 
@@ -308,7 +304,9 @@ impl<'a> Loader<'a> {
                 self.objects.push(rc.clone());
 
                 for i in 0..size as usize {
-                    unsafe { (*rc.get())[i] = (*self.read_next()?.get()).clone() };
+                    unsafe {
+                        (*rc.get())[i] = (*self.read_next()?.get()).clone();
+                    }
                 }
 
                 rc
@@ -394,25 +392,21 @@ impl<'a> Loader<'a> {
                     let key: ComplexRc = self.read_next()?;
                     let value: ComplexRc = self.read_next()?;
 
-                    unsafe {
-                        let key_ptr: &Value = &*key.get();
+                    let key: String = if let Some(key) = unsafe { &*key.get() }.as_i64() {
+                        "__integer__".to_string() + &to_string(&key).unwrap()
+                    } else if let Some(key) = unsafe { &*key.get() }.as_f64() {
+                        "__float__".to_string() + &to_string(&key).unwrap()
+                    } else if let Some(key) = unsafe { &*key.get() }.as_array() {
+                        "__array__".to_string() + &to_string(key).unwrap()
+                    } else if let Some(key) = unsafe { &*key.get() }.as_object() {
+                        "__object__".to_string() + &to_string(&key).unwrap()
+                    } else if let Some(key) = unsafe { &*key.get() }.as_str() {
+                        key.to_string()
+                    } else {
+                        unreachable!()
+                    };
 
-                        let key: String = if let Some(key) = key_ptr.as_i64() {
-                            "__integer__".to_string() + &to_string(&key).unwrap()
-                        } else if let Some(key) = key_ptr.as_f64() {
-                            "__float__".to_string() + &to_string(&key).unwrap()
-                        } else if let Some(key) = key_ptr.as_array() {
-                            "__array__".to_string() + &to_string(key).unwrap()
-                        } else if let Some(key) = key_ptr.as_object() {
-                            "__object__".to_string() + &to_string(&key).unwrap()
-                        } else if let Some(key) = key_ptr.as_str() {
-                            key.to_string()
-                        } else {
-                            unreachable!()
-                        };
-
-                        (*rc.get())[&key] = (*value.get()).clone();
-                    }
+                    unsafe { (*rc.get())[&key] = (*value.get()).clone() };
                 }
 
                 if structure_type == Constants::HashDefault {
@@ -423,15 +417,15 @@ impl<'a> Loader<'a> {
             }
             Constants::Object => {
                 let rc: ComplexRc = Rc::from(UnsafeCell::from(
-                    json!({ "__class": unsafe { &*self.read_next()?.get() }, "__type": "object" }),
+                    json!({ "__class": unsafe { &*self.read_next()?.get() }.clone(), "__type": "object" }),
                 ));
                 self.objects.push(rc.clone());
 
                 let object_size: i32 = self.read_fixnum()?;
 
                 for _ in 0..object_size {
-                    let key: &Value = unsafe { &*self.read_next()?.get() };
-                    let value: &Value = unsafe { &*self.read_next()?.get() };
+                    let key: Value = unsafe { &*self.read_next()?.get() }.clone();
+                    let value: Value = unsafe { &*self.read_next()?.get() }.clone();
 
                     let mut key_string: String = key.as_str().unwrap().to_string();
 
@@ -440,7 +434,7 @@ impl<'a> Loader<'a> {
                     }
 
                     unsafe {
-                        (*rc.get())[key_string.as_str()] = value.clone();
+                        (*rc.get())[key_string.as_str()] = value;
                     }
                 }
 
@@ -498,8 +492,8 @@ impl<'a> Loader<'a> {
                 let mut hash: Value = json!({});
 
                 for _ in 0..struct_size {
-                    let key: Value = unsafe { (*self.read_next()?.get()).clone() };
-                    let value: Value = unsafe { (*self.read_next()?.get()).clone() };
+                    let key: Value = unsafe { &*self.read_next()?.get() }.clone();
+                    let value: Value = unsafe { &*self.read_next()?.get() }.clone();
 
                     let mut key_string: String = String::new();
 
@@ -546,18 +540,18 @@ impl<'a> Loader<'a> {
                 self.objects.push(rc.clone());
 
                 unsafe {
-                    let rc_ref: &mut Value = &mut *rc.get();
-
                     match structure_type {
-                        Constants::Data => rc_ref["__data"] = (*self.read_next()?.get()).clone(),
+                        Constants::Data => {
+                            (*rc.get())["__data"] = (*self.read_next()?.get()).clone()
+                        }
                         Constants::UserClass => {
-                            rc_ref["__wrapped"] = (*self.read_next()?.get()).clone()
+                            (*rc.get())["__wrapped"] = (*self.read_next()?.get()).clone()
                         }
                         Constants::UserDefined => {
-                            rc_ref["__userDefined"] = (self.read_chunk()?).into()
+                            (*rc.get())["__userDefined"] = (self.read_chunk()?).into()
                         }
                         Constants::UserMarshal => {
-                            rc_ref["__userMarshal"] = (*self.read_next()?.get()).clone()
+                            (*rc.get())["__userMarshal"] = (*self.read_next()?.get()).clone()
                         }
                         _ => unreachable!(),
                     }
