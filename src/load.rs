@@ -235,7 +235,8 @@ impl<'a> Loader<'a> {
                         }
                     }
 
-                    if (unsafe { &*object.get() }["__type"].as_str().unwrap() == "bytes")
+                    if let Some(str) = unsafe { &*object.get() }["__type"].as_str() {
+                        if str == "bytes"
                         && [
                             Value::from(ENCODING_LONG_SYMBOL),
                             Value::from(ENCODING_SHORT_SYMBOL),
@@ -275,6 +276,7 @@ impl<'a> Loader<'a> {
                             }
 
                             *self.objects.last_mut().unwrap() = object.clone()
+}
                         }
                     }
                 }
