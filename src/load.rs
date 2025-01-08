@@ -237,46 +237,46 @@ impl<'a> Loader<'a> {
 
                     if let Some(str) = unsafe { &*object.get() }["__type"].as_str() {
                         if str == "bytes"
-                        && [
-                            Value::from(ENCODING_LONG_SYMBOL),
-                            Value::from(ENCODING_SHORT_SYMBOL),
-                        ]
-                        .contains(unsafe { &*key.get() })
-                        && self.string_mode != Some(StringMode::Binary)
-                    {
-                        let bytes: Value = unsafe { &*object.get() }["data"].clone();
-                        let array: Vec<u8>;
-
-                        #[cfg(feature = "sonic")]
+                            && [
+                                Value::from(ENCODING_LONG_SYMBOL),
+                                Value::from(ENCODING_SHORT_SYMBOL),
+                            ]
+                            .contains(unsafe { &*key.get() })
+                            && self.string_mode != Some(StringMode::Binary)
                         {
-                            array = from_value(&bytes).unwrap()
-                        }
-                        #[cfg(not(feature = "sonic"))]
-                        {
-                            array = from_value(bytes).unwrap()
-                        }
+                            let bytes: Value = unsafe { &*object.get() }["data"].clone();
+                            let array: Vec<u8>;
 
-                        if unsafe { &*key.get() } == ENCODING_SHORT_SYMBOL {
-                            unsafe {
-                                *object.get() = (std::str::from_utf8_unchecked(&array)).into();
+                            #[cfg(feature = "sonic")]
+                            {
+                                array = from_value(&bytes).unwrap()
                             }
-                        } else {
-                            let (cow, _, _) = Encoding::for_label(&value.unwrap())
-                                .unwrap_or(UTF_8)
-                                .decode(&array);
-                            unsafe {
-                                #[cfg(feature = "sonic")]
-                                {
-                                    *object.get() = cow.into();
-                                }
-                                #[cfg(not(feature = "sonic"))]
-                                {
-                                    *object.get() = (cow.into_owned()).into();
-                                }
+                            #[cfg(not(feature = "sonic"))]
+                            {
+                                array = from_value(bytes).unwrap()
                             }
 
-                            *self.objects.last_mut().unwrap() = object.clone()
-}
+                            if unsafe { &*key.get() } == ENCODING_SHORT_SYMBOL {
+                                unsafe {
+                                    *object.get() = (std::str::from_utf8_unchecked(&array)).into();
+                                }
+                            } else {
+                                let (cow, _, _) = Encoding::for_label(&value.unwrap())
+                                    .unwrap_or(UTF_8)
+                                    .decode(&array);
+                                unsafe {
+                                    #[cfg(feature = "sonic")]
+                                    {
+                                        *object.get() = cow.into();
+                                    }
+                                    #[cfg(not(feature = "sonic"))]
+                                    {
+                                        *object.get() = (cow.into_owned()).into();
+                                    }
+                                }
+
+                                *self.objects.last_mut().unwrap() = object.clone()
+                            }
                         }
                     }
                 }
@@ -566,7 +566,7 @@ impl<'a> Loader<'a> {
     }
 }
 
-impl<'a> Default for Loader<'a> {
+impl Default for Loader<'_> {
     fn default() -> Self {
         Self::new()
     }

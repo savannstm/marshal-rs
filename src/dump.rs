@@ -741,7 +741,7 @@ impl<'a> Dumper<'a> {
     }
 }
 
-impl<'a> Default for Dumper<'a> {
+impl Default for Dumper<'_> {
     fn default() -> Self {
         Self::new()
     }
