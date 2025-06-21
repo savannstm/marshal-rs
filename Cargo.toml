@@ -1,6 +1,6 @@
 [package]
 name = "marshal-rs"
-version = "0.3.5"
+version = "0.4.0"
 authors = ["savannstm <savannstm@gmail.com>"]
 edition = "2021"
 rust-version = "1.63.0"
@@ -11,15 +11,15 @@ documentation = "https://docs.rs/marshal-rs/"
 license-file = "LICENSE.md"
 keywords = ["marshal", "ruby", "serialize", "deserialize"]
 
-[features]
-sonic = ["dep:sonic-rs"]
-default = ["dep:serde_json"]
-
 [dependencies]
+decimal = "2.1.0"
 encoding_rs = "0.8.35"
+gxhash = "3.5.0"
+indexmap = { version = "2.9.0", features = ["serde"] }
 num-bigint = "0.4.6"
-serde_json = { version = "1.0.140", optional = true, features = ["preserve_order"] }
-sonic-rs = { version = "0.5.1", optional = true }
-
-[dev-dependencies]
-rayon = "1.10.0"
+serde = { version = "1.0.219", features = ["serde_derive"] }
+serde_derive = "1.0.219"
+serde_json = { version = "1.0.140", features = ["preserve_order"] }
+strum_macros = "0.26.4"
+thiserror = "2.0.12"
+uuid = { version = "1.17.0", features = ["serde", "v4"] }
