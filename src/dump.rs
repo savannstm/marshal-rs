@@ -1,22 +1,30 @@
 //! Utilities for serializing JSON objects back to Marshal byte streams.
 
-use crate::{constants::*, types::*, uuid_json};
-use decimal::d128;
+use crate::{constants::*, types::*};
 use gxhash::{HashMap, HashMapExt};
 use num_bigint::{BigInt, Sign};
-use serde_json::{from_str, from_value, Value};
 use std::{mem::take, str::FromStr};
-use uuid::Uuid;
 
-/// Struct for serializing JSON objects to Marshal byte streams.
+/// Struct for dumping [`Value`] to `Vec<u8>` Marshal data.
+///
+/// To construct the dumper, use [`Dumper::new`].
+///
+/// To change instance var prefix, use [`Dumper::set_instance_var_prefix`].
+///
+/// To dump the data from `Value`, use [`Dumper::dump`].
 pub struct Dumper<'a> {
     buffer: Vec<u8>,
-    symbols: HashMap<Value, usize>,
-    objects: HashMap<Uuid, usize>,
+    symbols: HashMap<String, usize>,
+    objects: HashMap<usize, usize>,
     instance_var_prefix: Option<&'a str>,
 }
 
 impl<'a> Dumper<'a> {
+    /// Constructs a new dumper with default values.
+    ///
+    /// To change instance var prefix, use [`Dumper::set_instance_var_prefix`].
+    ///
+    /// To dump the data from [`Value`], use [`Dumper::dump`].
     pub fn new() -> Self {
         Self {
             buffer: Vec::with_capacity(1024),
@@ -26,46 +34,48 @@ impl<'a> Dumper<'a> {
         }
     }
 
+    /// Sets dumper's instance var prefix to the passed `prefix`.
     pub fn set_instance_var_prefix(&mut self, prefix: &'a str) {
         self.instance_var_prefix = Some(prefix);
     }
 
-    #[allow(dead_code)]
-    fn remember(&mut self, value: &UuidValue) {
-        if !self.objects.contains_key(&value.uuid()) {
-            self.objects.insert(value.uuid(), self.objects.len());
+    fn remember_object(&mut self, value: &Value) {
+        if !self.objects.contains_key(&value.id()) {
+            self.objects.insert(value.id(), self.objects.len());
         }
     }
 
-    fn write_byte(&mut self, byte: u8) {
-        self.buffer.push(byte);
+    fn write_byte<T: Into<u8>>(&mut self, byte: T) {
+        self.buffer.push(byte.into());
     }
 
-    fn write_buffer(&mut self, bytes: &[u8]) {
-        self.buffer.extend(bytes);
+    fn write_buffer(&mut self, buf: &[u8]) {
+        self.buffer.extend(buf);
     }
 
-    fn write_bytes(&mut self, bytes: &[u8]) {
-        self.write_number(bytes.len() as i32);
-        self.write_buffer(bytes);
+    fn write_bytes(&mut self, buf: &[u8]) {
+        self.write_int(buf.len() as i32);
+        self.write_buffer(buf);
     }
 
-    fn write_bigint(&mut self, bigint: BigInt) {
+    fn write_bigint(&mut self, bigint: &str) {
+        let bigint = BigInt::from_str(bigint).unwrap();
         let (sign, bytes) = bigint.to_bytes_le();
         let bigint_sign = if sign == Sign::Plus {
             Constants::SignPositive
         } else {
             Constants::SignNegative
         };
-        let size_in_u16 = ((bytes.len() + 1) / 2) + NUMBER_PADDING as usize;
+        let size_in_u16 = ((bytes.len() + 1) / 2) as u8 + NUMBER_PADDING;
 
-        self.write_byte(Constants::BigInt as u8);
-        self.write_byte(bigint_sign as u8);
-        self.write_byte(size_in_u16 as u8);
+        self.write_byte(Constants::BigInt);
+        self.write_byte(bigint_sign);
+        self.write_byte(size_in_u16);
         self.write_buffer(&bytes);
     }
 
-    fn write_number(&mut self, number: i32) {
+    fn write_int(&mut self, number: i32) {
+        // In Ruby, 1 bit is reserved for a tag, and is not a part of the actual integer.
         const I32_MAX: i32 = i32::MAX >> 1;
         const I32_MIN: i32 = !(i32::MAX >> 1);
 
@@ -82,8 +92,8 @@ impl<'a> Dumper<'a> {
 
         match number {
             0 => buf.push(0),
-            1..=122 => buf.push(number as u8 + NUMBER_PADDING as u8),
-            -123..=-1 => buf.push(number as u8 - NUMBER_PADDING as u8),
+            1..=122 => buf.push(number as u8 + NUMBER_PADDING),
+            -123..=-1 => buf.push(number as u8 - NUMBER_PADDING),
             I8_MIN..=I8_MAX => {
                 buf.push(1);
                 buf.push(number as u8);
@@ -106,338 +116,268 @@ impl<'a> Dumper<'a> {
         self.write_buffer(&buf);
     }
 
-    fn write_string(&mut self, string: &str) {
+    fn write_str(&mut self, string: &str) {
         self.write_bytes(string.as_bytes())
     }
 
-    fn write_float(&mut self, float: d128) {
-        self.write_byte(Constants::Float as u8);
-        let string: String = float.to_string();
-
-        self.write_string(if float.is_infinite() {
-            if float.is_positive() {
-                "inf"
-            } else {
-                "-inf"
-            }
-        } else if float.is_negative() && float.is_zero() {
-            "-0"
+    fn write_symbol(&mut self, symbol: &str) {
+        if let Some(&pos) = self.symbols.get(symbol) {
+            self.write_byte(Constants::SymbolLink);
+            self.write_int(pos as i32);
         } else {
-            string.as_str()
-        });
+            self.write_byte(Constants::Symbol);
+            self.write_str(symbol);
+            self.symbols.insert(symbol.to_owned(), self.symbols.len());
+        }
     }
 
-    #[track_caller]
-    fn write_symbol(&mut self, mut symbol: UuidValue) {
-        if let Some(stripped) = symbol.as_str().unwrap().strip_prefix(SYMBOL_PREFIX) {
-            symbol = uuid_json!(stripped);
-        }
+    fn write_class_name(
+        &mut self,
+        data_type: Constants,
+        class: &str,
+        str: bool,
+    ) {
+        self.write_byte(data_type);
 
-        let pos = self.symbols.get(&symbol);
-
-        if let Some(&pos) = pos {
-            self.write_byte(Constants::SymbolLink as u8);
-            self.write_number(pos as i32);
+        if str {
+            self.write_str(class);
         } else {
-            self.write_byte(Constants::Symbol as u8);
-            self.write_bytes(symbol.as_str().unwrap().as_bytes());
-
-            self.symbols.insert(symbol.into_value(), self.symbols.len());
+            self.write_symbol(class);
         }
     }
 
-    fn write_extended(&mut self, extended: Vec<UuidValue>) {
-        for symbol in extended {
-            self.write_byte(Constants::ExtendedObject as u8);
-            self.write_symbol(symbol);
-        }
-    }
-
-    fn write_class(&mut self, data_type: Constants, object: &UuidValue) {
-        if let Some(extends) = object.get(EXTENDS_SYMBOL) {
-            self.write_extended(from_value(extends.clone().into_value()).unwrap());
-        }
-
-        self.write_byte(data_type as u8);
-        self.write_symbol(object["__class"].clone());
-    }
-
-    fn write_user_class(&mut self, object: &UuidValue) {
-        if let Some(extends) = object.get(EXTENDS_SYMBOL) {
-            self.write_extended(from_value(extends.clone().into_value()).unwrap());
-        }
-
-        if object.get("__wrapped").is_some() {
-            self.write_byte(Constants::UserClass as u8);
-            self.write_symbol(object["__class"].clone())
-        }
-    }
-
-    fn write_instance_var(&mut self, mut object: UuidValue) {
-        let object = object.as_object_mut().unwrap();
-
-        for key in [
-            "__class",
-            "__type",
-            "__data",
-            "__wrapped",
-            "__userDefined",
-            "__userMarshal",
-        ] {
-            object.shift_remove(key);
-        }
-
+    fn write_instance_var(&mut self, mut object: Object) {
         let object_length: usize = object.len();
-        self.write_number(object_length as i32);
+        self.write_int(object_length as i32);
 
         for (key, value) in object.iter_mut() {
             let mut key: String = key.to_owned();
 
             if let Some(prefix) = self.instance_var_prefix {
-                key.replace_range(SYMBOL_PREFIX.len()..SYMBOL_PREFIX.len() + prefix.len(), "@");
+                key.replace_range(0..prefix.len(), "@");
             }
 
-            self.write_symbol(uuid_json!(key));
-            self.write_structure(value.clone());
+            self.write_symbol(key.as_str());
+            self.write_structure(value.take());
         }
     }
 
-    fn write_structure(&mut self, mut value: UuidValue) {
+    fn write_extensions(&mut self, value: &Value) {
+        for symbol in value.extensions() {
+            self.write_byte(Constants::ExtendedObject);
+            self.write_symbol(symbol);
+        }
+    }
+
+    fn write_regexp(&mut self, regexp_str: &str) {
+        let first_slash_pos = regexp_str.find('/').unwrap();
+        let last_slash_pos = regexp_str.rfind('/').unwrap();
+
+        let expression_str = &regexp_str[first_slash_pos + 1..last_slash_pos];
+        let flags_str = &regexp_str[last_slash_pos + 1..];
+
+        let mut flags: u8 = 0;
+
+        if flags_str.contains('i') {
+            flags |= Constants::RegexpIgnore as u8;
+        }
+
+        if flags_str.contains('x') {
+            flags |= Constants::RegexpExtended as u8;
+        }
+
+        if flags_str.contains('m') {
+            flags |= Constants::RegexpMultiline as u8;
+        }
+
+        self.write_byte(Constants::Regexp);
+        self.write_str(expression_str);
+        self.write_byte(flags);
+    }
+
+    fn write_array(&mut self, array: Vec<Value>) {
+        self.write_byte(Constants::Array);
+        self.write_int(array.len() as i32);
+
+        for element in array {
+            self.write_structure(element);
+        }
+    }
+
+    fn write_string(&mut self, str: &str) {
+        self.write_byte(Constants::InstanceVar);
+        self.write_byte(Constants::String);
+        self.write_str(str);
+        self.write_int(1);
+        self.write_symbol(UTF8_ENCODING_SYMBOL);
+        self.write_byte(Constants::True);
+    }
+
+    fn write_hashmap(
+        &mut self,
+        mut hashmap: crate::types::HashMap,
+        is_struct: bool,
+    ) {
+        let mut object_len = hashmap.len();
+
+        let default_symbol = Value::symbol(DEFAULT_SYMBOL);
+        let default_value = hashmap.get_mut(&default_symbol).map(|x| x.take());
+
+        let hashmap_type = if default_value.is_some() {
+            object_len -= 1;
+            Constants::HashMapDefault
+        } else {
+            Constants::HashMap
+        };
+
+        if !is_struct {
+            self.write_byte(hashmap_type);
+        }
+
+        self.write_int(object_len as i32);
+
+        for (key, value) in hashmap.0.into_iter().take(object_len) {
+            self.write_structure(key);
+            self.write_structure(value);
+        }
+
+        if let Some(default_value) = default_value {
+            self.write_structure(default_value);
+        }
+    }
+
+    fn write_structure(&mut self, mut value: Value) {
+        let mut class_written: bool = false;
+
+        if value.is_data() {
+            self.write_class_name(Constants::Data, value.class_name(), false);
+            class_written = true;
+        } else if value.is_user_class() {
+            self.write_byte(Constants::UserClass);
+            self.write_symbol(value.class_name());
+            class_written = true;
+        } else if value.is_user_defined() {
+            let has_instance_var: bool = {
+                if let Some(obj) = value.as_object() {
+                    !obj.is_empty()
+                } else {
+                    false
+                }
+            };
+
+            if has_instance_var {
+                self.write_byte(Constants::InstanceVar);
+            }
+
+            self.write_class_name(
+                Constants::UserDefined,
+                value.class_name(),
+                false,
+            );
+            self.write_bytes(value.as_byte_vec().unwrap());
+
+            if has_instance_var {
+                self.write_instance_var(value.into_object().unwrap());
+            }
+            return;
+        } else if value.is_user_marshal() {
+            self.write_class_name(
+                Constants::UserMarshal,
+                value.class_name(),
+                false,
+            );
+
+            class_written = true;
+        }
+
         match *value {
-            Value::Null => self.write_byte(Constants::Null as u8),
-            Value::Bool(bool) => {
+            ValueType::Null => self.write_byte(Constants::Null),
+            ValueType::Bool(bool) => {
                 let bool_type = if bool {
                     Constants::True
                 } else {
                     Constants::False
                 };
 
-                self.write_byte(bool_type as u8);
+                self.write_byte(bool_type);
             }
-            Value::Number(_) => {
-                if let Some(integer) = value.as_i64() {
-                    self.write_byte(Constants::SmallInt as u8);
-                    self.write_number(integer as i32);
-                } else {
-                    self.remember(&value);
-                    let float_string = value.as_f64().unwrap().to_string();
-                    self.write_float(d128::from_str(&float_string).unwrap());
-                }
+            ValueType::Integer(int) => {
+                self.write_byte(Constants::Int);
+                self.write_int(int);
             }
             _ => {
-                if let Some(&object_pos) = self.objects.get(&value.uuid()) {
-                    self.write_byte(Constants::ObjectLink as u8);
-                    self.write_number(object_pos as i32);
+                if let Some(&object_pos) = self.objects.get(&value.id()) {
+                    self.write_byte(Constants::ObjectLink);
+                    self.write_int(object_pos as i32);
                     return;
                 }
 
-                let mut do_not_remember = false;
+                self.remember_object(&value);
+                self.write_extensions(&value);
 
-                if let Some(str) = value.as_str() {
-                    for prefix in PREFIXES {
-                        if prefix == FLOAT_PREFIX {
-                            continue;
-                        }
-
-                        if str.starts_with(prefix) {
-                            do_not_remember = true;
-                        }
-                    }
-                }
-
-                if !do_not_remember {
-                    self.remember(&value);
-                }
+                let class =
+                    unsafe { &mut *(&mut value as *mut Value) }.class_name();
 
                 match *value {
-                    Value::Object(_) => {
-                        if let Some(object_type) = value.get("__type") {
-                            match object_type.as_str().unwrap() {
-                                "object" => {
-                                    if value.get("__data").is_some() {
-                                        self.write_class(Constants::Data, &value);
-                                        self.write_structure(value["__data"].clone());
-                                    } else if value.get("__wrapped").is_some() {
-                                        self.write_user_class(&value);
-                                        self.write_structure(value["__wrapped"].clone());
-                                    } else if value.get("__userDefined").is_some() {
-                                        let object = value.as_object_mut().unwrap();
-                                        let mut object_length: usize = object.len();
+                    ValueType::Null
+                    | ValueType::Bool(_)
+                    | ValueType::Integer(_) => unreachable!(),
+                    ValueType::Float(ref str) => {
+                        self.write_byte(Constants::Float);
+                        self.write_str(str);
+                    }
+                    ValueType::Bigint(ref str) => self.write_bigint(str),
+                    ValueType::Symbol(ref str) => self.write_symbol(str),
+                    ValueType::String(ref str) => self.write_string(str),
+                    ValueType::Regexp(ref str) => self.write_regexp(str),
+                    ValueType::Bytes(ref bytes) => {
+                        self.write_byte(Constants::String);
+                        self.write_bytes(bytes);
+                    }
+                    ValueType::Array(ref mut array) => {
+                        self.write_array(take(array))
+                    }
+                    ValueType::Object(ref mut object) => {
+                        if !class_written {
+                            self.write_class_name(
+                                Constants::Object,
+                                class,
+                                false,
+                            );
+                        }
 
-                                        for (key, _) in object {
-                                            if key.starts_with("__") {
-                                                object_length -= 1;
-                                            }
-                                        }
-
-                                        let has_instance_var: bool = object_length > 0;
-
-                                        if has_instance_var {
-                                            self.write_byte(Constants::InstanceVar as u8);
-                                        }
-
-                                        self.write_class(Constants::UserDefined, &value);
-                                        self.write_bytes(
-                                            &from_value::<Vec<u8>>(
-                                                value["__userDefined"].take().into_value(),
-                                            )
-                                            .unwrap(),
-                                        );
-
-                                        if has_instance_var {
-                                            self.write_instance_var(value);
-                                        }
-                                    } else if value.get("__userMarshal").is_some() {
-                                        self.write_class(Constants::UserMarshal, &value);
-                                        self.write_structure(value["__userMarshal"].take());
-                                    } else {
-                                        self.write_class(Constants::Object, &value);
-                                        self.write_instance_var(value);
-                                    }
-                                }
-                                "bytes" => {
-                                    let buf: Vec<u8> =
-                                        from_value(value["data"].take().into_value()).unwrap();
-
-                                    self.write_byte(Constants::String as u8);
-                                    self.write_bytes(&buf);
-                                }
-                                "struct" => {
-                                    self.write_class(Constants::Struct, &value);
-                                    self.write_instance_var(value["__members"].take());
-                                }
-                                "class" => {
-                                    self.write_byte(Constants::Class as u8);
-                                    self.write_string(value["__name"].as_str().unwrap());
-                                }
-                                "module" => {
-                                    let mut module_type = Constants::Module;
-
-                                    if let Some(is_old) = value["__old"].as_bool() {
-                                        if is_old {
-                                            module_type = Constants::ModuleOld;
-                                        }
-                                    }
-
-                                    self.write_byte(module_type as u8);
-                                    self.write_string(value["__name"].as_str().unwrap());
-                                }
-                                "regexp" => {
-                                    self.write_byte(Constants::Regexp as u8);
-                                    self.write_string(value["expression"].as_str().unwrap());
-
-                                    let flags_string = value["flags"].as_str().unwrap();
-                                    let mut flags: u8 = 0;
-
-                                    if flags_string.contains('i') {
-                                        flags |= Constants::RegexpIgnore as u8;
-                                    }
-
-                                    if flags_string.contains('x') {
-                                        flags |= Constants::RegexpExtended as u8;
-                                    }
-
-                                    if flags_string.contains('m') {
-                                        flags |= Constants::RegexpMultiline as u8;
-                                    }
-
-                                    self.write_byte(flags);
-                                }
-                                "bigint" => {
-                                    let bigint =
-                                        BigInt::from_str(value["value"].as_str().unwrap()).unwrap();
-                                    self.write_bigint(bigint);
-                                }
-                                _ => unreachable!(),
-                            }
-                        } else {
-                            let object = value.as_object_mut().unwrap();
-                            let default_value = object
-                                .get_mut(DEFAULT_SYMBOL)
-                                .map(|default_value| default_value.take());
-
-                            let hashmap_type = if default_value.is_some() {
-                                Constants::HashMapDefault
+                        self.write_instance_var(take(object));
+                    }
+                    ValueType::Class => {
+                        if !class_written {
+                            self.write_class_name(Constants::Class, class, true)
+                        }
+                    }
+                    ValueType::Module => {
+                        self.write_class_name(
+                            if value.is_old_module() {
+                                Constants::ModuleOld
                             } else {
-                                Constants::HashMap
-                            };
-
-                            self.write_byte(hashmap_type as u8);
-
-                            for key in [
-                                "__class",
-                                "__type",
-                                "__data",
-                                "__wrapped",
-                                "__userDefined",
-                                "__userMarshal",
-                                DEFAULT_SYMBOL,
-                            ] {
-                                object.shift_remove(key);
-                            }
-
-                            self.write_number(object.len() as i32);
-
-                            for (key, value) in object.into_iter() {
-                                let mut key_without_prefix = "";
-
-                                for prefix in [
-                                    NULL_PREFIX,
-                                    BOOLEAN_PREFIX,
-                                    INTEGER_PREFIX,
-                                    FLOAT_PREFIX,
-                                    ARRAY_PREFIX,
-                                    OBJECT_PREFIX,
-                                ] {
-                                    if let Some(without_prefix) = key.strip_prefix(prefix) {
-                                        key_without_prefix = without_prefix;
-                                        break;
-                                    }
-                                }
-
-                                let key = if key_without_prefix.is_empty() {
-                                    uuid_json!(key)
-                                } else {
-                                    uuid_json!(from_str::<Value>(key_without_prefix).unwrap())
-                                };
-
-                                self.write_structure(key);
-                                self.write_structure(value.take());
-                            }
-
-                            if let Some(default_value) = default_value {
-                                self.write_structure(default_value);
-                            }
-                        }
+                                Constants::Module
+                            },
+                            class,
+                            true,
+                        );
                     }
-                    Value::Array(_) => {
-                        let array = value.as_array_mut().unwrap();
-
-                        self.write_byte(Constants::Array as u8);
-                        self.write_number(array.len() as i32);
-
-                        for element in array {
-                            self.write_structure(element.take());
-                        }
+                    ValueType::HashMap(ref mut map) => {
+                        self.write_hashmap(take(map), false);
                     }
-                    Value::String(_) => {
-                        let str = value.as_str().unwrap();
-
-                        if str.starts_with(SYMBOL_PREFIX) {
-                            self.write_symbol(value);
-                        } else if str.starts_with(FLOAT_PREFIX) {
-                            let float_string = str.strip_prefix(FLOAT_PREFIX).unwrap();
-                            self.write_float(decimal::d128::from_str(float_string).unwrap())
-                        } else {
-                            self.write_byte(Constants::InstanceVar as u8);
-                            self.write_byte(Constants::String as u8);
-                            self.write_string(str);
-                            self.write_number(1);
-                            self.write_symbol(uuid_json!(UTF8_ENCODING_SYMBOL));
-                            self.write_byte(Constants::True as u8);
+                    ValueType::Struct(ref mut hashmap) => {
+                        if !class_written {
+                            self.write_class_name(
+                                Constants::Struct,
+                                class,
+                                false,
+                            );
                         }
+
+                        self.write_hashmap(take(hashmap), true);
                     }
-                    _ => {}
                 }
             }
         }
@@ -448,17 +388,16 @@ impl<'a> Dumper<'a> {
     /// `instance_var_prefix` argument takes a string, and replaces instance variables' prefixes with Ruby's "@" prefix. It's value must be the same, as in `load()` function.
     /// # Example
     /// ```rust
-    /// use marshal_rs::{Dumper, uuid_json};
-    /// use serde_json::json;
+    /// use marshal_rs::{Dumper, Value};
     ///
     /// let mut dumper = Dumper::new();
-    /// let json = uuid_json!(null);
+    /// let json = Value::null();
     ///
     /// // Serialize Value to Marshal bytes
     /// let bytes: Vec<u8> = dumper.dump(json);
     /// assert_eq!(&bytes, &[0x04, 0x08, 0x30]);
     /// ```
-    pub fn dump(&mut self, value: UuidValue) -> Vec<u8> {
+    pub fn dump(&mut self, value: Value) -> Vec<u8> {
         self.write_buffer(MARSHAL_VERSION);
         self.write_structure(value);
 
@@ -475,20 +414,21 @@ impl Default for Dumper<'_> {
     }
 }
 
-/// Serializes JSON object to a Marshal byte stream.
+/// Serializes [`Value`] to a Marshal byte stream.
 ///
 /// `instance_var_prefix` argument takes a string, and replaces instance variables' prefixes with Ruby's "@" prefix. It's value must be the same, as in `load()` function.
+///
 /// # Example
 /// ```rust
-/// use marshal_rs::{dump, uuid_json};
+/// use marshal_rs::{dump, Value};
 ///
-/// let json = uuid_json!(null);
+/// let json = Value::null();
 ///
-/// // Serialize Value to bytes
+/// // Serialize Value to Marshal bytes
 /// let bytes: Vec<u8> = dump(json, None);
 /// assert_eq!(&bytes, &[0x04, 0x08, 0x30]);
 /// ```
-pub fn dump(value: UuidValue, instance_var_prefix: Option<&str>) -> Vec<u8> {
+pub fn dump(value: Value, instance_var_prefix: Option<&str>) -> Vec<u8> {
     let mut dumper = Dumper::new();
 
     if let Some(prefix) = instance_var_prefix {

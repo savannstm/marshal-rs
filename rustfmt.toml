@@ -1,2 +1,2 @@
 format_strings = true
-line_width = 80
+max_width = 80

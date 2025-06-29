@@ -1,8 +1,7 @@
 //! # marshal-rs
 //!
-//! **`marshal-rs` is a Rust implementation of Ruby-lang's `Marshal`.**
+//! **`marshal-rs` is a complete Rust implementation of Ruby-lang's `Marshal`.**
 //!
-//! This project is a **complete** Rust implementation of Ruby Marshal.
 //! It is capable of :fire: **_BLAZINGLY FAST_** loading data from dumped Ruby Marshal files, as well as :fire: **_BLAZINGLY FAST_** dumping it back to Marshal format.
 //!
 //! ## Installation
@@ -11,97 +10,131 @@
 //!
 //! ## Overview
 //!
-//! This crate has two main structs, `Loader` and `Dumper`, along with helper functions that use them internally. There's three load functions: `load()`, `load_utf8()`, `load_binary()`, and a single dump function: `dump()`. For more information, see [Strings](#strings).
+//! This crate has two main structs, `Loader` and `Dumper`, along with helper functions that use them internally. There's three load functions: `load()`, `load_utf8()`, `load_binary()`, and a single dump function: `dump()`.
 //!
-//! `load()` takes a `&[u8]`, consisting of Marshal data bytes (that can be read using `std::fs::read()`) as its only argument, and outputs `UuidValue`.
+//! `load()` takes a `&[u8]`, consisting of Marshal data bytes (that can be read using `std::fs::read()`) as its only argument, and outputs `Value`.
 //!
-//! `dump()`, in turn, takes `UuidValue` as its only argument and serializes it back to `Vec<u8>` Marshal byte stream. It does not preserve strings' initial encoding, writing all strings as UTF-8 encoded.
+//! `dump()`, in turn, takes `marshal_rs::Value` as its only argument and serializes it back to `Vec<u8>` Marshal byte stream. It does not preserve strings' initial encoding, writing all strings as UTF-8 encoded.
 //!
-//! `UuidValue` is defined in `marshal_rs::types`. The reason this crate wraps around `serde_json::Value` this way, is because it needs to track unique object instances, like in Ruby, to properly write object links and produce the same files, as Marshal.
+//! By default, in `load()` function, Ruby strings, that include encoding instance variable, are serialized to JSON strings, and those which don't, serialized to byte arrays.
 //!
-//! The table shows, how `marshal-rs` serializes Ruby types to JSON:
-//!
-//! | Ruby object                                    | Serialized to JSON                                                        |
-//! | ---------------------------------------------- | ------------------------------------------------------------------------- |
-//! | `nil`                                          | `null`                                                                    |
-//! | `1337` (Integer)                               | `1337`                                                                    |
-//! | `36893488147419103232` (Big Integer)           | `{ __type: "bigint", value: "36893488147419103232" }` (Plain object)      |
-//! | `13.37` (Float)                                | `"__float__13.37"`                                                        |
-//! | `"ligma"` (String)                             | `"ligma"`                                                                 |
-//! | `:ligma` (Symbol)                              | `"__symbol__ligma"`                                                       |
-//! | `/lgma/i` (Regex)                              | `{ "__type": "regexp", "expression": "lgma", flags: "i" }` (Plain object) |
-//! | `[]` (Array)                                   | `[]`                                                                      |
-//! | `{}` (Hash)                                    | `{}` (Plain object)                                                       |
-//! | `Object.new` (Including structs, modules etc.) | `{ "__class": "__symbol__Object", "__type": "object" }` (Plain object)    |
-//!
-//! ### Strings
-//!
-//! By default, in `load()` function, Ruby strings, that include encoding instance variable, are serialized to JSON strings, and those which don't, serialized to `{ __type: "bytes", data: [...] }` objects.
-//!
-//! `load_utf8()` function tries to convert arrays without instance variable to string, and produces string if array is valid UTF8, and object otherwise.
+//! `load_utf8()` function tries to convert arrays without instance variable to string, and produces string if array is valid UTF-8, and object otherwise.
 //!
 //! `load_binary()` function converts all strings to objects.
 //!
 //! This behavior also can be controlled in `Loader` by calling `set_string_mode()`.
 //!
-//! ### Objects and Symbols
+//! You can manage the prefix of instance variables using `instance_var_prefix` argument in `load()` and `dump()`, or by using `set_instance_var_prefix()` function in `Loader` or `Dumper`. Passed string replaces "@" instance variables' prefixes.
 //!
-//! For objects, that cannot be serialized in JSON (such as `Object` and `Symbol`), `marshal-rs` uses approach of stringifying and adding prefixes and properties. It stringifyies symbols and prefixes them with `__symbol__`, and serializes objects' classes and types as `__class` keys and `__type` keys respectively.
-//!
-//! ### Floats
-//!
-//! To avoid loss of precision, floats are stored as strings with `__float__` prefix.
+//! To avoid loss of precision, floats are stored as strings.
 //!
 //! If Marshal file contains any extra float mantissa bits, `marshal-rs` discards them. They aren't written by latest 4.8 version of Marshal, but it still preserves them, if encounters any. `marshal-rs` does not.
 //!
-//! ### Hash keys
+//! The reason this crate wraps around `serde_json::Value`, is because it needs to cleanly track unique object instances and object metadata.
 //!
-//! For Hash keys, that in Ruby may be represented with any type, `marshal-rs` tries to preserve key type with prefixing stringifiyed key with it type. For example, Ruby `{ 1 => nil }` Hash will be converted to `{ "__integer__1": null }` object.
+//! The table shows, how `marshal-rs` serializes Ruby types to Value:
 //!
-//! The table shows the prefixes for the types:
+//! | Ruby object                                | Serialized to Value                       |
+//! | ------------------------------------------ | ----------------------------------------- |
+//! | `nil`                                      | `null`                                    |
+//! | `true`, `false`                            | `true`, `false`                           |
+//! | `1337` (Integer)                           | `1337`                                    |
+//! | `36893488147419103232` (Big Integer)       | `"36893488147419103232"`                  |
+//! | `13.37` (Float)                            | `"13.37"`                                 |
+//! | `"ligma"` (String, with instance variable) | `"ligma"`                                 |
+//! | `:ligma` (Symbol)                          | `"ligma"`                                 |
+//! | `/lgma/i` (Regex)                          | `"/lgma/i"`                               |
+//! | `[ ... ]` (Array)                          | `[ ... ]`                                 |
+//! | `Hash`, `Struct`                           | `IndexMap<Value, Value>`                  |
+//! | `Object.new`                               | `IndexMap<String, Value>`                 |
+//! | `Class`, `Module`                          | `null` (Doesn't dump any data to Marshal) |
 //!
-//! | Type      | Prefix        |
-//! | --------- | ------------- |
-//! | `Nil`     | `__null__`    |
-//! | `Boolean` | `__boolean__` |
-//! | `Integer` | `__integer__` |
-//! | `Float`   | `__float__`   |
-//! | `Object`  | `__object__`  |
-//! | `Array`   | `__array__`   |
+//! Value can be stringified and written to JSON using `serde_json::to_string` function. That will wrap each value in an object, that holds its metadata as object keys. For example, `null` will become
 //!
-//! ### Instance variables
+//! ```json
+//! {
+//!     "__id": number,
+//!     "__class": "",
+//!     "__type": 0,
+//!     "__value": null,
+//!     "__extensions": [],
+//!     "__flags": 0
+//! }
+//! ```
 //!
-//! Instance variables are always decoded as strings with `__symbol__` prefix.
-//! You can manage the prefix of instance variables using `instance_var_prefix` argument in `load()` and `dump()`, or by using `set_instance_var_prefix()` function in `Loader` or `Dumper`. Passed string replaces "@" instance variables' prefixes.
+//! object.
 //!
-//! ### Object links
+//! Possible `__type` values are defined in `src/types.rs`:
 //!
-//! We nailed writing object links. Dumped objects should be exactly similar to the objects dumped with Ruby.
+//! ```compile_fail
+//! pub enum ValueType {
+//!     #[default]
+//!     Null = 0,
+//!     Bool(bool) = 1,
+//!     Integer(i32) = 2,
+//!     Float(String) = 3,
+//!     Bigint(String) = 4,
+//!     String(String) = 5,
+//!     Bytes(Vec<u8>) = 6,
+//!     Symbol(String) = 7,
+//!     Regexp(String) = 8,
+//!     Array(Vec<Value>) = 9,
+//!     Object(ObjectMap) = 10,
+//!     Class = 11,
+//!     Module = 12,
+//!     HashMap(HashMap) = 13,
+//!     Struct(HashMap) = 14,
+//! }
+//! ```
+//!
+//! Possible `__flags` values are defined in `src/types.rs`:
+//!
+//! ```compile_fail
+//! struct ValueFlags: u8 {
+//!     const None = 0;
+//!     const OldModule = 1;
+//!     const UserClass = 2;
+//!     const Data = 4;
+//!     const UserDefined = 8;
+//!     const UserMarshal = 16;
+//! }
+//! ```
+//!
+//! Keep in mind `__flags` also could be a combination of some flags.
 //!
 //! ### Unsafe code
 //!
 //! In this crate, unsafe code provides the ability to replicate Marshal's behavior. It shouldn't ever cause problems.
 //!
+//! ## Test coverage
+//!
+//! Currently, tests feature dumping/loading the following values: nil, bool, positive/negative fixnum, positive/negative bignum, float (including inf, nan and negative), utf-8/non-utf-8 strings, object links, array, hashes, structs, objects (including extended with modules, with custom marshal\_ methods, with custom \_load/\_dump methods), regexps, built-in class subclasses.
+//!
+//! Also tests include loading/dumping RPG Maker game's files and battle-testing them.
+//!
+//! If something is missing in the tests, open an issue or submit a pull request.
+//!
 //! ## Example
 //!
 //! ```rust
 //! use std::fs::read;
-//! use marshal_rs::{load, dump, UuidValue};
+//! use marshal_rs::{load, dump, Value};
 //!
 //! fn main() {
 //!     // Read marshal data from file
 //!     // let marshal_data: Vec<u8> = read("./Map001.rvdata2").unwrap();
 //!     // For this example, we'll just take pre-defined marshal data
-//!     let marshal_data: Vec<u8> = [0x04, 0x08, 0x30].to_vec();
+//!     let marshal_data = [0x04, 0x08, 0x30];
 //!
 //!     // Serializing to json
 //!     // `load()` takes a `&[u8]` as argument, so `Vec<u8>` must be borrowed
-//!     let serialized_to_json: UuidValue = load(&marshal_data, None).unwrap();
+//!     let serialized_to_json: Value = load(&marshal_data, None).unwrap();
 //!
-//!     // Here you may `std::fs::write()` serialized JSON to file
+//!     // Here you may stringify Value using `serde_json::to_string()`, and
+//!     // `std::fs::write()` it to file
 //!
 //!     // Serializing back to marshal
-//!     // `dump()` requires owned UuidValue as argument
+//!     // `dump()` requires owned Value as argument
 //!     let serialized_to_marshal: Vec<u8> = dump(serialized_to_json, None);
 //!
 //!     // Here you may `std::fs::write()` serialized Marshal data to file
@@ -123,12 +156,15 @@
 //! Project is licensed under WTFPL.
 //!
 
-pub mod constants;
+mod constants;
 pub mod dump;
 pub mod load;
 pub mod types;
 
-// Convenient re-exports
 pub use dump::{dump, Dumper};
 pub use load::{load, load_binary, load_utf8, LoadError, Loader, StringMode};
-pub use types::UuidValue;
+pub use types::{HashMap, Object, Value, ValueType};
+
+thread_local! {
+    pub(crate) static VALUE_INSTANCE_COUNTER: types::SafeCell<usize> = const { types::SafeCell::new(0) };
+}

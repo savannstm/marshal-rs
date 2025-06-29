@@ -1,5 +1,4 @@
-use marshal_rs::{dump, load};
-use serde_json::json;
+use marshal_rs::{dump, load, Value};
 
 fn main() {
     // Bytes slice of Ruby Marshal data
@@ -8,7 +7,7 @@ fn main() {
 
     // Serialize bytes to a `Value`
     let json = load(&null_bytes, None).unwrap();
-    assert_eq!(json, json!(null));
+    assert_eq!(json, Value::null());
 
     // Here you may write the json object to file using `std::fs::write()`
 

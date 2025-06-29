@@ -1,15 +1,22 @@
 //! Utilities for serializing Marshal byte streams to JSON.
 
-use crate::{constants::*, types::*, uuid_json, value_rc};
-use decimal::d128;
+use crate::{constants::*, types::*, VALUE_INSTANCE_COUNTER};
 use encoding_rs::{Encoding, UTF_8};
 use num_bigint::BigInt;
-use serde_json::{from_value, to_string, Value};
-use std::{mem::transmute, rc::Rc, str::FromStr};
+use std::{mem::transmute, rc::Rc};
 use strum_macros::EnumIs;
 use thiserror::Error;
 
+type ValueRc = Rc<SafeCell<Value>>;
+
+macro_rules! value_rc {
+    ($val:expr) => {
+        std::rc::Rc::new(SafeCell::new($val))
+    };
+}
+
 #[derive(PartialEq, Clone, Copy, EnumIs)]
+#[repr(u8)]
 pub enum StringMode {
     Auto,
     UTF8,
@@ -17,6 +24,7 @@ pub enum StringMode {
 }
 
 #[derive(Debug, Error)]
+#[repr(u8)]
 pub enum LoadError {
     #[error(
         "Unexpected end of file encountered when expected more bytes. File is probably corrupted."
@@ -28,7 +36,13 @@ pub enum LoadError {
     InvalidMarshalVersion,
 }
 
-/// Struct for serializing Marshal byte streams to JSON.
+/// Struct for serializing Marshal data buffers to [`Value`].
+///
+/// To construct a loader, use [`Loader::new`].
+///
+/// To change its string mode or instance var prefix, use [`Loader::set_string_mode`] and [`Loader::set_instance_var_prefix`] respectively.
+///
+/// To load the data from `&[u8]` buffer, use [`Loader::load`].
 pub struct Loader<'a> {
     buffer: &'a [u8],
     byte_position: usize,
@@ -39,6 +53,11 @@ pub struct Loader<'a> {
 }
 
 impl<'a> Loader<'a> {
+    /// Constructs a new loader with default values.
+    ///
+    /// To change its string mode or instance var prefix, use [`Loader::set_string_mode`] and [`Loader::set_instance_var_prefix`] respectively.
+    ///
+    /// To load the data from `&[u8]` buffer, use [`Loader::load`].
     pub fn new() -> Self {
         Self {
             buffer: &[],
@@ -50,11 +69,13 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// Sets loader's string mode to the passed `mode`.
     #[inline]
     pub fn set_string_mode(&mut self, mode: StringMode) {
         self.string_mode = mode;
     }
 
+    /// Sets loader's instance var prefix to the passed `prefix`.
     #[inline]
     pub fn set_instance_var_prefix(&mut self, prefix: &'a str) {
         self.instance_var_prefix = Some(prefix);
@@ -62,7 +83,9 @@ impl<'a> Loader<'a> {
 
     #[inline]
     fn read_byte(&mut self) -> Result<u8, LoadError> {
-        let Some(&byte) = self.buffer.get(self.byte_position) else {
+        let byte = if let Some(&byte) = self.buffer.get(self.byte_position) {
+            byte
+        } else {
             return Err(LoadError::UnexpectedEOF);
         };
 
@@ -72,10 +95,12 @@ impl<'a> Loader<'a> {
 
     #[inline]
     fn read_bytes(&mut self, amount: usize) -> Result<&[u8], LoadError> {
-        let Some(bytes) = self
+        let bytes = if let Some(bytes) = self
             .buffer
             .get(self.byte_position..self.byte_position + amount)
-        else {
+        {
+            bytes
+        } else {
             return Err(LoadError::UnexpectedEOF);
         };
 
@@ -85,26 +110,27 @@ impl<'a> Loader<'a> {
 
     #[inline]
     fn read_int(&mut self) -> Result<i32, LoadError> {
-        let fixnum_size: i8 = self.read_byte()? as i8;
+        let int_size: i8 = self.read_byte()? as i8;
 
-        Ok(match fixnum_size {
+        Ok(match int_size {
             // Fixnum is zero
             0 => 0,
             // These values mark the length of fixnum in bytes
             -4..=4 => {
-                let size = fixnum_size.unsigned_abs() as usize;
+                let size = int_size.unsigned_abs() as usize;
                 let bytes: &[u8] = self.read_bytes(size)?;
-                let mut buffer: [u8; 4] = [if fixnum_size < 0 { 255u8 } else { 0u8 }; 4];
+                let mut int_buffer: [u8; 4] =
+                    [if int_size < 0 { 255u8 } else { 0u8 }; 4];
 
-                buffer[..size].copy_from_slice(&bytes[..size]);
-                i32::from_le_bytes(buffer)
+                int_buffer[..size].copy_from_slice(&bytes[..size]);
+                i32::from_le_bytes(int_buffer)
             }
             // Otherwise fixnum is a single byte and we read it
             _ => {
-                if fixnum_size > 0 {
-                    fixnum_size as i32 - NUMBER_PADDING
+                if int_size > 0 {
+                    int_size as i32 - NUMBER_PADDING as i32
                 } else {
-                    fixnum_size as i32 + NUMBER_PADDING
+                    int_size as i32 + NUMBER_PADDING as i32
                 }
             }
         })
@@ -137,9 +163,8 @@ impl<'a> Loader<'a> {
     #[inline]
     fn read_symbol(&mut self) -> Result<ValueRc, LoadError> {
         let symbol_string: String = self.read_string()?;
-        let symbol: String = format!("{SYMBOL_PREFIX}{symbol_string}");
 
-        let symbol_rc = value_rc!(uuid_json!(symbol));
+        let symbol_rc = value_rc!(Value::symbol(symbol_string));
         self.symbols.push(symbol_rc.clone());
         Ok(symbol_rc)
     }
@@ -152,7 +177,7 @@ impl<'a> Loader<'a> {
         let object = object_rc.get();
         let mut decode_string = false;
 
-        if !self.string_mode.is_binary() && object["__type"].as_str() == Some("bytes") {
+        if !self.string_mode.is_binary() && object.is_bytes() {
             decode_string = true;
         }
 
@@ -165,21 +190,24 @@ impl<'a> Loader<'a> {
             }
 
             let key = key_rc.get();
-            let string_bytes: Vec<u8> = from_value(object["data"].clone().into_value()).unwrap();
+            let string_bytes = object.as_byte_vec().unwrap();
 
-            if **key == UTF8_ENCODING_SYMBOL {
-                *object = unsafe { uuid_json!(std::str::from_utf8_unchecked(&string_bytes)) };
-            } else if **key == NON_UTF8_ENCODING_SYMBOL {
-                let value = value_rc.get();
-                let encoding_label: Vec<u8> =
-                    from_value(value.get_mut("data").unwrap().take().into_value()).unwrap();
+            if let ValueType::Symbol(str) = &**key {
+                if str == UTF8_ENCODING_SYMBOL {
+                    object.set_value(ValueType::String(unsafe {
+                        String::from_utf8_unchecked(string_bytes.to_vec())
+                    }));
+                } else if str == NON_UTF8_ENCODING_SYMBOL {
+                    let value = value_rc.get();
+                    let encoding_label = value.as_byte_vec().unwrap();
 
-                let (cow, _, _) = Encoding::for_label(&encoding_label)
-                    .unwrap_or(UTF_8)
-                    .decode(&string_bytes);
-                *object = uuid_json!(cow.into_owned());
+                    let (cow, _, _) = Encoding::for_label(encoding_label)
+                        .unwrap_or(UTF_8)
+                        .decode(string_bytes);
 
-                *self.objects.last_mut().unwrap() = object_rc.clone();
+                    object.set_value(ValueType::String(cow.into_owned()));
+                    *self.objects.last_mut().unwrap() = object_rc.clone();
+                }
             }
         }
 
@@ -192,28 +220,26 @@ impl<'a> Loader<'a> {
         let object_rc = self.read_next()?;
         let object = object_rc.get();
 
-        if object.is_object() && object.get(EXTENDS_SYMBOL).is_none() {
-            object[EXTENDS_SYMBOL] = uuid_json!([symbol_rc.get().take()]);
-        }
-
+        object.add_extension(symbol_rc.get().as_str().unwrap().to_owned());
         Ok(object_rc)
     }
 
     #[inline]
     fn read_array(&mut self) -> Result<ValueRc, LoadError> {
         let array_size = self.read_int()?;
-        let array_rc = value_rc!(uuid_json!(vec![0; array_size as usize]));
+        let array_rc = value_rc!(Value::null());
         self.objects.push(array_rc.clone());
 
-        let array = array_rc.get();
+        let mut array: Vec<Value> = Vec::with_capacity(array_size as usize);
 
-        for i in 0..array_size as usize {
+        for _ in 0..array_size as usize {
             let element_rc = self.read_next()?;
             let element = element_rc.get();
 
-            array[i] = element.clone();
+            array.push(element.clone());
         }
 
+        *array_rc.get() = Value::array(array);
         Ok(array_rc)
     }
 
@@ -231,7 +257,7 @@ impl<'a> Loader<'a> {
             bigint_bytes,
         );
 
-        let bigint_object = uuid_json!({"__type": "bigint", "value": bignum.to_string()});
+        let bigint_object = Value::bigint(bignum.to_string());
 
         let bigint_rc = value_rc!(bigint_object);
         self.objects.push(bigint_rc.clone());
@@ -241,7 +267,11 @@ impl<'a> Loader<'a> {
     #[inline]
     fn read_class(&mut self) -> Result<ValueRc, LoadError> {
         let class_class = self.read_string()?;
-        let class_rc = value_rc!(uuid_json!({ "__class": class_class, "__type": "class" }));
+        let class_rc = value_rc!(Value::class());
+        let class = class_rc.get();
+
+        class.set_class(class_class);
+
         self.objects.push(class_rc.clone());
         Ok(class_rc)
     }
@@ -249,8 +279,12 @@ impl<'a> Loader<'a> {
     #[inline]
     fn read_module(&mut self, is_old: bool) -> Result<ValueRc, LoadError> {
         let module_class = self.read_string()?;
-        let module_rc =
-            value_rc!(uuid_json!({ "__class": module_class, "__type": "module", "__old": is_old }));
+        let module_rc = value_rc!(Value::module());
+        let module = module_rc.get();
+
+        module.set_old_module(is_old);
+        module.set_class(module_class);
+
         self.objects.push(module_rc.clone());
         Ok(module_rc)
     }
@@ -260,55 +294,35 @@ impl<'a> Loader<'a> {
         let float_string: &str = &self.read_string()?;
 
         let float = match float_string {
-            "inf" => Some(d128::infinity()),
-            "-inf" => Some(d128::neg_infinity()),
-            "nan" => None,
+            "inf" | "-inf" | "nan" => float_string,
             _ => {
-                let mut float_chars: std::str::Chars = float_string.chars();
-                let first_char: Option<char> = float_chars.next();
+                let float_string_bytes = float_string.as_bytes();
+                let float_end =
+                    float_string_bytes.iter().rposition(|x| x.is_ascii_digit());
 
-                let mut float_string = String::new();
-
-                if let Some(first_char) = first_char {
-                    if first_char.is_numeric() || first_char == '-' {
-                        float_string.push(first_char);
-
-                        float_string += &float_chars
-                            .take_while(|&ch| ch == '.' || ch.is_numeric())
-                            .collect::<String>();
-
-                        let float = d128::from_str(&float_string).unwrap_or(d128::zero());
-                        Some(float)
-                    } else {
-                        None
-                    }
+                if let Some(end) = float_end {
+                    &float_string[..=end]
                 } else {
-                    None
+                    float_string
                 }
             }
         };
 
-        let float_rc = value_rc!(match float {
-            Some(value) => {
-                let json = uuid_json!(format!("{FLOAT_PREFIX}{value}"));
-                json
-            }
-            None => uuid_json!(null),
-        });
-
+        let float_rc = value_rc!(Value::float(float));
         self.objects.push(float_rc.clone());
         Ok(float_rc)
     }
 
     #[inline]
-    fn read_hashmap(&mut self, has_default_value: bool) -> Result<ValueRc, LoadError> {
+    fn read_hashmap(
+        &mut self,
+        has_default_value: bool,
+    ) -> Result<ValueRc, LoadError> {
         let hashmap_size = self.read_int()?;
-        let hashmap_rc = value_rc!(uuid_json!(serde_json::Map::with_capacity(
-            hashmap_size as usize
-        )));
+        let hashmap_rc = value_rc!(Value::null());
         self.objects.push(hashmap_rc.clone());
 
-        let hashmap = hashmap_rc.get();
+        let mut hashmap = HashMap::with_capacity(hashmap_size as usize);
 
         for _ in 0..hashmap_size {
             let key_rc = self.read_next()?;
@@ -317,52 +331,32 @@ impl<'a> Loader<'a> {
             let key = key_rc.get();
             let value = value_rc.get();
 
-            let key_prefix = match &**key {
-                Value::Null => NULL_PREFIX,
-                Value::Bool(_) => BOOLEAN_PREFIX,
-                Value::Number(number) => {
-                    if number.is_i64() {
-                        INTEGER_PREFIX
-                    } else {
-                        FLOAT_PREFIX
-                    }
-                }
-                Value::String(_) => "",
-                Value::Array(_) => ARRAY_PREFIX,
-                Value::Object(_) => OBJECT_PREFIX,
-            };
-
-            let key = if key_prefix.is_empty() {
-                key.as_str().unwrap().to_owned()
-            } else {
-                format!(
-                    "{key_prefix}{}",
-                    to_string(&key.clone().into_value()).unwrap()
-                )
-            };
-
-            hashmap[key.as_str()] = value.take();
+            hashmap.insert(key.take(), value.take());
         }
 
         if has_default_value {
             let default_value_rc = self.read_next()?;
             let default_value = default_value_rc.get();
 
-            hashmap[DEFAULT_SYMBOL] = default_value.take();
+            let default_value_key = Value::symbol(DEFAULT_SYMBOL);
+            hashmap.insert(default_value_key, default_value.take());
         }
 
+        hashmap_rc.get().set_value(ValueType::HashMap(hashmap));
         Ok(hashmap_rc)
     }
 
     #[inline]
     fn read_object(&mut self) -> Result<ValueRc, LoadError> {
         let object_class = self.read_next()?;
-        let object_rc =
-            value_rc!(uuid_json!({ "__class": object_class.get().clone(), "__type": "object" }));
+        let object_rc = value_rc!(Value::null());
         self.objects.push(object_rc.clone());
 
         let object_size = self.read_int()?;
         let object = object_rc.get();
+        let mut object_map = Object::with_capacity(object_size as usize);
+
+        object.set_class(object_class.get().as_str().unwrap().to_owned());
 
         for _ in 0..object_size {
             let key_rc = self.read_next()?;
@@ -374,12 +368,13 @@ impl<'a> Loader<'a> {
             let mut key_string = key.as_str().unwrap().to_string();
 
             if let Some(prefix) = self.instance_var_prefix {
-                key_string.replace_range(SYMBOL_PREFIX.len()..SYMBOL_PREFIX.len() + 1, prefix);
+                key_string.replace_range(0..1, prefix);
             }
 
-            object[key_string.as_str()] = value.clone();
+            object_map.insert(key_string, value.clone());
         }
 
+        object.set_value(ValueType::Object(object_map));
         Ok(object_rc)
     }
 
@@ -387,23 +382,23 @@ impl<'a> Loader<'a> {
     fn read_regexp(&mut self) -> Result<ValueRc, LoadError> {
         let regexp_expression = self.read_string()?;
         let regexp_flags = self.read_byte()?;
-        let mut regexp_flags_string = String::with_capacity(3);
+
+        let mut regexp = format!("/{regexp_expression}/");
+        regexp.reserve_exact(3);
 
         if regexp_flags & Constants::RegexpIgnore != 0 {
-            regexp_flags_string.push('i');
+            regexp.push('i');
         }
 
         if regexp_flags & Constants::RegexpExtended != 0 {
-            regexp_flags_string.push('x');
+            regexp.push('x');
         }
 
         if regexp_flags & Constants::RegexpMultiline != 0 {
-            regexp_flags_string.push('m');
+            regexp.push('m');
         }
 
-        let regexp = uuid_json!({"__type": "regexp", "expression": regexp_expression, "flags": regexp_flags_string});
-
-        let regexp_rc = value_rc!(regexp);
+        let regexp_rc = value_rc!(Value::regexp(regexp));
         self.objects.push(regexp_rc.clone());
         Ok(regexp_rc)
     }
@@ -415,12 +410,12 @@ impl<'a> Loader<'a> {
 
         let object = if string_mode.is_utf_8() {
             if let Ok(string) = std::str::from_utf8(string_bytes) {
-                uuid_json!(string)
+                Value::string(string)
             } else {
-                uuid_json!({ "__type": "bytes", "data": string_bytes })
+                Value::bytes(string_bytes)
             }
         } else {
-            uuid_json!({ "__type": "bytes", "data": string_bytes })
+            Value::bytes(string_bytes)
         };
 
         let string_rc = value_rc!(object);
@@ -431,12 +426,11 @@ impl<'a> Loader<'a> {
     #[inline]
     fn read_struct(&mut self) -> Result<ValueRc, LoadError> {
         let struct_class = self.read_next()?;
-        let struct_rc =
-            value_rc!(uuid_json!({ "__class": struct_class.get(), "__type": "struct" }));
+        let struct_rc = value_rc!(Value::null());
         self.objects.push(struct_rc.clone());
 
         let struct_size = self.read_int()?;
-        let mut struct_map = serde_json::Map::with_capacity(struct_size as usize);
+        let mut struct_map = HashMap::with_capacity(struct_size as usize);
 
         for _ in 0..struct_size {
             let key_rc = self.read_next()?;
@@ -445,55 +439,49 @@ impl<'a> Loader<'a> {
             let key = key_rc.get();
             let value = value_rc.get();
 
-            let key_prefix = match &**key {
-                Value::Null => NULL_PREFIX,
-                Value::Bool(_) => BOOLEAN_PREFIX,
-                Value::Number(number) => {
-                    if number.is_i64() {
-                        INTEGER_PREFIX
-                    } else {
-                        FLOAT_PREFIX
-                    }
-                }
-                Value::String(_) => "",
-                Value::Array(_) => ARRAY_PREFIX,
-                Value::Object(_) => OBJECT_PREFIX,
-            };
-
-            let key_string = if key_prefix.is_empty() {
-                key.as_str().unwrap().to_owned()
-            } else if key.is_array() {
-                format!(
-                    "{key_prefix}{}",
-                    String::from_utf8(from_value(key.take().into_value()).unwrap()).unwrap()
-                )
-            } else {
-                format!("{key_prefix}{}", to_string(&key).unwrap())
-            };
-
-            struct_map.insert(key_string, value.take().into_value());
+            struct_map.insert(key.take(), value.take());
         }
 
-        struct_rc.get()["__members"] = uuid_json!(Value::Object(struct_map));
+        let mut struct_object = Value::rstruct(struct_map);
+        struct_object
+            .set_class(struct_class.get().as_str().unwrap().to_owned());
+        *struct_rc.get() = struct_object;
+
         Ok(struct_rc)
     }
 
     #[inline]
-    fn read_data(&mut self, structure_type: Constants) -> Result<ValueRc, LoadError> {
+    fn read_data(
+        &mut self,
+        structure_type: Constants,
+    ) -> Result<ValueRc, LoadError> {
         let data_class = self.read_next()?;
-        let data_rc = value_rc!(uuid_json!({ "__class": data_class.get(), "__type": "object" }));
+        let data_rc = value_rc!(Value::null());
         self.objects.push(data_rc.clone());
 
         let data = data_rc.get();
 
         match structure_type {
-            Constants::Data => data["__data"] = self.read_next()?.get().take(),
-            Constants::UserClass => data["__wrapped"] = self.read_next()?.get().take(),
-            Constants::UserDefined => data["__userDefined"] = uuid_json!(self.read_chunk()?),
-            Constants::UserMarshal => data["__userMarshal"] = self.read_next()?.get().take(),
+            Constants::Data => {
+                *data = self.read_next()?.get().take();
+                data.set_data(true);
+            }
+            Constants::UserClass => {
+                *data = self.read_next()?.get().take();
+                data.set_user_class(true);
+            }
+            Constants::UserDefined => {
+                *data = Value::bytes(self.read_chunk()?);
+                data.set_user_defined(true);
+            }
+            Constants::UserMarshal => {
+                *data = self.read_next()?.get().take();
+                data.set_user_marshal(true);
+            }
             _ => unreachable!(),
         }
 
+        data.set_class(data_class.get().as_str().unwrap().to_owned());
         Ok(data_rc)
     }
 
@@ -502,10 +490,12 @@ impl<'a> Loader<'a> {
         let structure_type: Constants = unsafe { transmute(self.read_byte()?) };
 
         Ok(match structure_type {
-            Constants::Null => value_rc!(uuid_json!(null)),
-            Constants::True => value_rc!(uuid_json!(true)),
-            Constants::False => value_rc!(uuid_json!(false)),
-            Constants::SmallInt => value_rc!(uuid_json!(self.read_int()?)),
+            Constants::Null => value_rc!(Value::null()),
+            Constants::True => value_rc!(Value::bool(true)),
+            Constants::False => value_rc!(Value::bool(false)),
+            Constants::Int => {
+                value_rc!(Value::int(self.read_int()?))
+            }
             Constants::SymbolLink => self.read_symbol_link()?,
             Constants::ObjectLink => self.read_object_link()?,
             Constants::Symbol => self.read_symbol()?,
@@ -545,8 +535,7 @@ impl<'a> Loader<'a> {
     /// * Passed byte stream's data is invalid.
     /// # Example
     /// ```rust
-    /// use marshal_rs::Loader;
-    /// use serde_json::json;
+    /// use marshal_rs::{Loader, Value};
     ///
     /// // Bytes slice of Ruby Marshal data
     /// // Files with Marshal data can be read with std::fs::read()
@@ -556,23 +545,29 @@ impl<'a> Loader<'a> {
     /// let mut loader = Loader::new();
     ///
     /// // Serialize bytes to a Value
-    /// // Returns Result<UuidValue, LoadError>
+    /// // Returns Result<Value, LoadError>
     /// let json = loader.load(&bytes).unwrap();
-    /// assert_eq!(json, json!(null));
+    /// assert_eq!(json, Value::null());
     /// ```
     #[inline]
-    pub fn load(&mut self, buffer: &[u8]) -> Result<UuidValue, LoadError> {
+    pub fn load(&mut self, buffer: &[u8]) -> Result<Value, LoadError> {
         self.buffer = unsafe { &*(buffer as *const [u8]) };
 
-        let Some(marshal_version) = self.buffer.get(0..2) else {
-            return Err(LoadError::UnexpectedEOF);
-        };
+        let marshal_version =
+            if let Some(marshal_version) = self.buffer.get(0..2) {
+                marshal_version
+            } else {
+                return Err(LoadError::UnexpectedEOF);
+            };
 
         if marshal_version != MARSHAL_VERSION {
             return Err(LoadError::InvalidMarshalVersion);
         }
 
         self.byte_position += 2;
+
+        // Reset instance counter
+        VALUE_INSTANCE_COUNTER.with(|x| *x.get() = 0);
 
         let json = self.read_next()?;
 
@@ -581,7 +576,8 @@ impl<'a> Loader<'a> {
         self.byte_position = 0;
 
         // We just cleared all of the references to this Rc, and can safely unsafely unwrap
-        let json = unsafe { Rc::try_unwrap(json).unwrap_unchecked() }.into_inner();
+        let json =
+            unsafe { Rc::try_unwrap(json).unwrap_unchecked() }.into_inner();
         Ok(json)
     }
 }
@@ -604,20 +600,22 @@ impl Default for Loader<'_> {
 ///
 /// # Example
 /// ```rust
-/// use marshal_rs::load;
-/// use serde_json::json;
+/// use marshal_rs::{load, Value};
 ///
 /// // Bytes slice of Ruby Marshal data
 /// // Files with Marshal data can be read with std::fs::read()
 /// let bytes: [u8; 3] = [0x04, 0x08, 0x30]; // null
 ///
 /// // Serialize bytes to a Value
-/// // Returns Result<serde_json::Value, LoadError>
+/// // Returns Result<Value, LoadError>
 /// let json = load(&bytes, None).unwrap();
-/// assert_eq!(json, json!(null));
+/// assert_eq!(json, Value::null());
 /// ```
 #[inline]
-pub fn load(buffer: &[u8], instance_var_prefix: Option<&str>) -> Result<UuidValue, LoadError> {
+pub fn load(
+    buffer: &[u8],
+    instance_var_prefix: Option<&str>,
+) -> Result<Value, LoadError> {
     let mut loader = Loader::new();
 
     if let Some(prefix) = instance_var_prefix {
@@ -639,20 +637,22 @@ pub fn load(buffer: &[u8], instance_var_prefix: Option<&str>) -> Result<UuidValu
 ///
 /// # Example
 /// ```rust
-/// use marshal_rs::load;
-/// use serde_json::json;
+/// use marshal_rs::{load, Value};
 ///
 /// // Bytes slice of Ruby Marshal data
 /// // Files with Marshal data can be read with std::fs::read()
 /// let bytes: [u8; 3] = [0x04, 0x08, 0x30]; // null
 ///
 /// // Serialize bytes to a Value
-/// // Returns Result<UuidValue, LoadError>
+/// // Returns Result<Value, LoadError>
 /// let json = load(&bytes, None).unwrap();
-/// assert_eq!(json, json!(null));
+/// assert_eq!(json, Value::null());
 /// ```
 #[inline]
-pub fn load_utf8(buffer: &[u8], instance_var_prefix: Option<&str>) -> Result<UuidValue, LoadError> {
+pub fn load_utf8(
+    buffer: &[u8],
+    instance_var_prefix: Option<&str>,
+) -> Result<Value, LoadError> {
     let mut loader = Loader::new();
     loader.set_string_mode(StringMode::UTF8);
 
@@ -675,23 +675,22 @@ pub fn load_utf8(buffer: &[u8], instance_var_prefix: Option<&str>) -> Result<Uui
 ///
 /// # Example
 /// ```rust
-/// use marshal_rs::load;
-/// use serde_json::json;
+/// use marshal_rs::{load, Value};
 ///
 /// // Bytes slice of Ruby Marshal data
 /// // Files with Marshal data can be read with std::fs::read()
 /// let bytes: [u8; 3] = [0x04, 0x08, 0x30]; // null
 ///
 /// // Serialize bytes to a Value
-/// // Returns Result<UuidValue, LoadError>
+/// // Returns Result<Value, LoadError>
 /// let json = load(&bytes, None).unwrap();
-/// assert_eq!(json, json!(null));
+/// assert_eq!(json, Value::null());
 /// ```
 #[inline]
 pub fn load_binary(
     buffer: &[u8],
     instance_var_prefix: Option<&str>,
-) -> Result<UuidValue, LoadError> {
+) -> Result<Value, LoadError> {
     let mut loader = Loader::new();
     loader.set_string_mode(StringMode::Binary);
 

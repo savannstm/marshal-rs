@@ -1,11 +1,10 @@
-#[allow(dead_code)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 #[repr(u8)]
-#[derive(PartialEq, Clone, Copy)]
 pub enum Constants {
     True = b'T',
     False = b'F',
     Null = b'0',
-    SmallInt = b'i',
+    Int = b'i',
     Symbol = b':',
     SymbolLink = b';',
     ObjectLink = b'@',
@@ -49,29 +48,16 @@ impl PartialEq<Constants> for u8 {
     }
 }
 
-// Type prefixes
-pub const NULL_PREFIX: &str = "__null__";
-pub const BOOLEAN_PREFIX: &str = "__boolean__";
-pub const INTEGER_PREFIX: &str = "__integer__";
-pub const FLOAT_PREFIX: &str = "__float__";
-pub const ARRAY_PREFIX: &str = "__array__";
-pub const OBJECT_PREFIX: &str = "__object__";
-pub const SYMBOL_PREFIX: &str = "__symbol__";
-pub const PREFIXES: [&str; 7] = [
-    NULL_PREFIX,
-    BOOLEAN_PREFIX,
-    INTEGER_PREFIX,
-    FLOAT_PREFIX,
-    ARRAY_PREFIX,
-    OBJECT_PREFIX,
-    SYMBOL_PREFIX,
-];
+impl From<Constants> for u8 {
+    fn from(val: Constants) -> Self {
+        val as u8
+    }
+}
 
 // Required constants
-pub const UTF8_ENCODING_SYMBOL: &str = "__symbol__E";
-pub const NON_UTF8_ENCODING_SYMBOL: &str = "__symbol__encoding";
-pub const EXTENDS_SYMBOL: &str = "__ruby_extends__";
+pub const UTF8_ENCODING_SYMBOL: &str = "E";
+pub const NON_UTF8_ENCODING_SYMBOL: &str = "encoding";
 pub const DEFAULT_SYMBOL: &str = "__ruby_default__";
 pub const MARSHAL_VERSION: &[u8; 2] = &0x0408u16.to_be_bytes(); // The latest and probably final version of Ruby Marshal is 4.8
 
-pub(crate) const NUMBER_PADDING: i32 = 5;
+pub const NUMBER_PADDING: u8 = 5;

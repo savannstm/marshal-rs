@@ -1,5 +1,4 @@
-use marshal_rs::{Dumper, Loader};
-use serde_json::json;
+use marshal_rs::{Dumper, Loader, Value};
 
 fn main() {
     // Bytes slice of Ruby Marshal data
@@ -16,9 +15,9 @@ fn main() {
     let true_value = loader.load(&true_bytes).unwrap();
     let false_value = loader.load(&false_bytes).unwrap();
 
-    assert_eq!(null_value, json!(null));
-    assert_eq!(true_value, json!(true));
-    assert_eq!(false_value, json!(false));
+    assert_eq!(null_value, Value::null());
+    assert_eq!(true_value, Value::bool(true));
+    assert_eq!(false_value, Value::bool(false));
 
     // Here you may write the json object to file using `std::fs::write()`
 
