@@ -454,11 +454,11 @@ impl Value {
 
     /// Converts the value into a `Vec<Value>` if it is an array.
     ///
-    /// Returns an empty vector if the value is not an array.
-    pub fn into_array(self) -> Vec<Value> {
+    /// Returns `None` otherwise.
+    pub fn into_array(self) -> Option<Vec<Value>> {
         match self.value {
-            ValueType::Array(arr) => arr,
-            _ => Vec::new(),
+            ValueType::Array(arr) => Some(arr),
+            _ => None,
         }
     }
 
@@ -628,6 +628,16 @@ impl Value {
     pub fn rstruct(map: HashMap) -> Self {
         Self::from(ValueType::Struct(map))
     }
+
+    /// Returns a reference to the value corresponding to the key if the Value is object.
+    ///
+    /// Returns None if not an object or key doesn't exist.
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        match &self.value {
+            ValueType::Object(obj) => obj.get(key),
+            _ => None,
+        }
+    }
 }
 
 impl From<ValueType> for Value {
@@ -695,7 +705,7 @@ impl Index<&str> for Value {
     fn index(&self, key: &str) -> &Self::Output {
         match &self.value {
             ValueType::Object(obj) => &obj[key],
-            _ => panic!(),
+            _ => panic!("Cannot index into a Value that is not an object"),
         }
     }
 }
@@ -707,7 +717,7 @@ impl IndexMut<&str> for Value {
                 Entry::Occupied(entry) => entry.into_mut(),
                 Entry::Vacant(entry) => entry.insert(Value::default()),
             },
-            _ => panic!(),
+            _ => panic!("Cannot index into a Value that is not an object"),
         }
     }
 }
@@ -718,7 +728,7 @@ impl Index<usize> for Value {
     fn index(&self, idx: usize) -> &Self::Output {
         match &self.value {
             ValueType::Array(arr) => &arr[idx],
-            _ => panic!(),
+            _ => panic!("Cannot index into a Value that is not an array"),
         }
     }
 }
@@ -727,7 +737,57 @@ impl IndexMut<usize> for Value {
     fn index_mut(&mut self, idx: usize) -> &mut Self::Output {
         match &mut self.value {
             ValueType::Array(arr) => &mut arr[idx],
-            _ => panic!(),
+            _ => panic!("Cannot index into a Value that is not an array"),
+        }
+    }
+}
+
+impl From<serde_json::Value> for Value {
+    fn from(value: serde_json::Value) -> Self {
+        match value {
+            serde_json::Value::Null => Value::null(),
+            serde_json::Value::Bool(bool) => Value::bool(bool),
+            serde_json::Value::String(str) => Value::string(str),
+            serde_json::Value::Number(num) => {
+                if let Some(int) = num.as_i64() {
+                    Value::int(int as i32)
+                } else {
+                    Value::float(num.as_f64().unwrap().to_string())
+                }
+            }
+            serde_json::Value::Array(arr) => Value::array(
+                arr.into_iter().map(Value::from).collect::<Vec<_>>(),
+            ),
+            serde_json::Value::Object(obj) => Value::object(
+                obj.into_iter().map(|(k, v)| (k, Value::from(v))).collect(),
+            ),
+        }
+    }
+}
+
+impl From<Value> for serde_json::Value {
+    fn from(value: Value) -> Self {
+        match value.value {
+            ValueType::Null => serde_json::Value::Null,
+            ValueType::Bool(b) => serde_json::Value::Bool(b),
+            ValueType::String(s) => serde_json::Value::String(s),
+            ValueType::Integer(i) => serde_json::Value::Number(i.into()),
+            ValueType::Float(f) => match f.parse::<f64>() {
+                Ok(f_num) => serde_json::Number::from_f64(f_num)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or(serde_json::Value::Null),
+                Err(_) => serde_json::Value::Null,
+            },
+            ValueType::Array(arr) => serde_json::Value::Array(
+                arr.into_iter().map(serde_json::Value::from).collect(),
+            ),
+            ValueType::Object(obj) => serde_json::Value::Object(
+                obj.0
+                    .into_iter()
+                    .map(|(k, v)| (k, serde_json::Value::from(v)))
+                    .collect(),
+            ),
+            _ => unreachable!(),
         }
     }
 }
