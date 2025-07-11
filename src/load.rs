@@ -1,6 +1,6 @@
 //! Utilities for serializing Marshal byte streams to JSON.
 
-use crate::{constants::*, types::*, VALUE_INSTANCE_COUNTER};
+use crate::{VALUE_INSTANCE_COUNTER, constants::*, types::*};
 use encoding_rs::{Encoding, UTF_8};
 use num_bigint::BigInt;
 use std::{mem::transmute, rc::Rc};

@@ -1,5 +1,5 @@
 #![allow(clippy::approx_constant)]
-use marshal_rs::{dump, load, HashMap, Object, Value};
+use marshal_rs::{HashMap, Object, Value, dump, load};
 
 #[test]
 fn null() {

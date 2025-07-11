@@ -1,4 +1,4 @@
-use marshal_rs::{dump, load, Value};
+use marshal_rs::{Value, dump, load};
 
 fn main() {
     // Bytes slice of Ruby Marshal data

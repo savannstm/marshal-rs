@@ -1,5 +1,5 @@
 #![allow(clippy::approx_constant)]
-use marshal_rs::{load, load_binary, HashMap, Object, Value, ValueType};
+use marshal_rs::{HashMap, Object, Value, ValueType, load, load_binary};
 
 #[test]
 #[should_panic]

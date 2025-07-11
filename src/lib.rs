@@ -161,8 +161,8 @@ pub mod dump;
 pub mod load;
 pub mod types;
 
-pub use dump::{dump, Dumper};
-pub use load::{load, load_binary, load_utf8, LoadError, Loader, StringMode};
+pub use dump::{Dumper, dump};
+pub use load::{LoadError, Loader, StringMode, load, load_binary, load_utf8};
 pub use types::{HashMap, Object, Value, ValueType};
 
 thread_local! {

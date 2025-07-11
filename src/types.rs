@@ -1,8 +1,8 @@
 use bitflags::bitflags;
 use gxhash::GxBuildHasher;
-use indexmap::{map::Entry, IndexMap};
+use indexmap::{IndexMap, map::Entry};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{from_str, to_string, Number};
+use serde_json::{Number, from_str, to_string};
 use std::{
     cell::UnsafeCell,
     hash::{Hash, Hasher},
