@@ -722,6 +722,26 @@ impl IndexMut<&str> for Value {
     }
 }
 
+impl Index<Value> for Value {
+    type Output = Value;
+
+    fn index(&self, index: Value) -> &Self::Output {
+        match &self.value {
+            ValueType::HashMap(map) => &map[&index],
+            _ => panic!("Cannot index into a Value that is not a hashmap"),
+        }
+    }
+}
+
+impl IndexMut<Value> for Value {
+    fn index_mut(&mut self, index: Value) -> &mut Self::Output {
+        match &mut self.value {
+            ValueType::HashMap(map) => &mut map[&index],
+            _ => panic!("Cannot index into a Value that is not a hashmap"),
+        }
+    }
+}
+
 impl Index<usize> for Value {
     type Output = Value;
 
