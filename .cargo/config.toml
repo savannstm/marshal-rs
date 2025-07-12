@@ -1,5 +1,2 @@
 [build]
-rustflags = [
-    "-C", "target-feature=+aes,+sse2",
-    "-C", "target-feature=+crt-static",
-]
+rustflags = ["-C", "target-feature=+aes,+sse2"]
