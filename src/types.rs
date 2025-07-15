@@ -629,12 +629,82 @@ impl Value {
         Self::from(ValueType::Struct(map))
     }
 
+    /// Returns a reference to the value corresponding to the index if the Value is array.
+    ///
+    /// Returns None if not an array or item at index doesn't exist.
+    pub fn get_index(&self, idx: usize) -> Option<&Value> {
+        match &self.value {
+            ValueType::Array(arr) => arr.get(idx),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the value corresponding to the index if the Value is array.
+    ///
+    /// Returns None if not an array or item at index doesn't exist.
+    pub fn get_index_mut(&mut self, idx: usize) -> Option<&mut Value> {
+        match &mut self.value {
+            ValueType::Array(arr) => arr.get_mut(idx),
+            _ => None,
+        }
+    }
+}
+
+/// Provides `get` and `get_mut` implementations for [`Value`].
+///
+/// A separate trait is required because `Value` has two distinct,
+/// but similar object types: [`ValueType::Object`] and [`ValueType::HashMap`].
+///
+/// [`Object`] is indexed by `&str`, whereas [`HashMap`] by `&Value`.
+pub trait Get<T> {
+    type Output;
+    fn get(&self, key: T) -> Option<&Self::Output>;
+    fn get_mut(&mut self, key: T) -> Option<&mut Self::Output>;
+}
+
+impl Get<&str> for Value {
+    type Output = Value;
+
     /// Returns a reference to the value corresponding to the key if the Value is object.
     ///
     /// Returns None if not an object or key doesn't exist.
-    pub fn get(&self, key: &str) -> Option<&Value> {
+    fn get(&self, key: &str) -> Option<&Self::Output> {
         match &self.value {
             ValueType::Object(obj) => obj.get(key),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the value corresponding to the key if the Value is object.
+    ///
+    /// Returns None if not an object or key doesn't exist.
+    fn get_mut(&mut self, key: &str) -> Option<&mut Self::Output> {
+        match &mut self.value {
+            ValueType::Object(obj) => obj.get_mut(key),
+            _ => None,
+        }
+    }
+}
+
+impl Get<&Value> for Value {
+    type Output = Value;
+
+    /// Returns a reference to the value corresponding to the key if the Value is hashmap.
+    ///
+    /// Returns None if not an hashmap or key doesn't exist.
+    fn get(&self, key: &Value) -> Option<&Self::Output> {
+        match &self.value {
+            ValueType::HashMap(map) => map.get(key),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the value corresponding to the key if the Value is hashmap.
+    ///
+    /// Returns None if not an hashmap or key doesn't exist.
+    fn get_mut(&mut self, key: &Value) -> Option<&mut Self::Output> {
+        match &mut self.value {
+            ValueType::HashMap(map) => map.get_mut(key),
             _ => None,
         }
     }

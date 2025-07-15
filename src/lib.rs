@@ -121,6 +121,11 @@ If something is missing in the tests, open an issue or submit a pull request.
 use std::fs::read;
 use marshal_rs::{load, dump, Value};
 
+// Note: Value supports indexing by `&str` if it's an object,
+// and by `&Value` if it's a hashmap, but to use that you need
+// to import `Get` trait.
+// use marshal_rs::Get;
+
 fn main() {
     // Read marshal data from file
     // let marshal_data: Vec<u8> = read("./Map001.rvdata2").unwrap();
@@ -164,7 +169,7 @@ pub mod types;
 
 pub use dump::{Dumper, dump};
 pub use load::{LoadError, Loader, StringMode, load, load_binary, load_utf8};
-pub use types::{HashMap, Object, Value, ValueType};
+pub use types::{Get, HashMap, Object, Value, ValueType};
 
 thread_local! {
     pub(crate) static VALUE_INSTANCE_COUNTER: types::SafeCell<usize> = const { types::SafeCell::new(0) };
