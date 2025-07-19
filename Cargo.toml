@@ -1,6 +1,6 @@
 [package]
 name = "marshal-rs"
-version = "1.1.0"
+version = "1.1.1"
 authors = ["savannstm <savannstm@gmail.com>"]
 edition = "2021"
 rust-version = "1.63.0"
@@ -18,7 +18,7 @@ gxhash = "3.5.0"
 indexmap = { version = "2.10.0", features = ["serde"] }
 num-bigint = "0.4.6"
 serde = { version = "1.0.219", features = ["serde_derive"] }
-serde_json = { version = "1.0.140", features = ["preserve_order"] }
+serde_json = { version = "1.0.141", features = ["preserve_order"] }
 strum_macros = "0.26.4"
 thiserror = "2.0.12"
 
