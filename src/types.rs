@@ -1,3 +1,4 @@
+use crate::VALUE_INSTANCE_COUNTER;
 use bitflags::bitflags;
 use gxhash::GxBuildHasher;
 use indexmap::{IndexMap, map::Entry};
@@ -9,8 +10,6 @@ use std::{
     ops::{Deref, DerefMut, Index, IndexMut},
 };
 use strum_macros::EnumIs;
-
-use crate::VALUE_INSTANCE_COUNTER;
 
 #[derive(Debug)]
 pub(crate) struct SafeCell<T> {

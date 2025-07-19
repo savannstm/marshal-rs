@@ -3,6 +3,7 @@
 use crate::{VALUE_INSTANCE_COUNTER, constants::*, types::*};
 use encoding_rs::{Encoding, UTF_8};
 use num_bigint::BigInt;
+use serde::{Deserialize, Serialize};
 use std::{mem::transmute, rc::Rc};
 use strum_macros::EnumIs;
 use thiserror::Error;
@@ -15,7 +16,7 @@ macro_rules! value_rc {
     };
 }
 
-#[derive(PartialEq, Clone, Copy, EnumIs)]
+#[derive(PartialEq, Clone, Copy, EnumIs, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum StringMode {
     Auto,
@@ -23,7 +24,7 @@ pub enum StringMode {
     Binary,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum LoadError {
     #[error(
