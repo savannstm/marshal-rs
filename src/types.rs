@@ -322,7 +322,7 @@ impl Value {
 
     /// Sets the Ruby class name of this [`Value`].
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `class` - A string representing the new class name.
     pub fn set_class(&mut self, class: String) {
@@ -345,7 +345,7 @@ impl Value {
 
     /// Adds a module to the list of extensions for this value.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `extension` - The name of the module extending this value.
     pub fn add_extension(&mut self, extension: String) {
@@ -362,7 +362,7 @@ impl Value {
 
     /// Enables or disables the [`ValueFlags::OldModule`] flag.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `enabled` - If `true`, sets the flag; otherwise, clears it.
     pub fn set_old_module(&mut self, enabled: bool) {
@@ -381,7 +381,7 @@ impl Value {
 
     /// Enables or disables the `UserClass` flag.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `enabled` - If [`true`], sets the flag; otherwise, clears it.
     pub fn set_user_class(&mut self, enabled: bool) {
@@ -400,7 +400,7 @@ impl Value {
 
     /// Enables or disables the [`ValueFlags::Data`] flag.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `enabled` - If [`true`], sets the flag; otherwise, clears it.
     pub fn set_data(&mut self, enabled: bool) {
@@ -419,7 +419,7 @@ impl Value {
 
     /// Enables or disables the [`ValueFlags::UserDefined`] flag.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `enabled` - If [`true`], sets the flag; otherwise, clears it.
     pub fn set_user_defined(&mut self, enabled: bool) {
@@ -438,7 +438,7 @@ impl Value {
 
     /// Enables or disables the `UserMarshal` flag.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `enabled` - If [`true`], sets the flag; otherwise, clears it.
     pub fn set_user_marshal(&mut self, enabled: bool) {
@@ -462,7 +462,7 @@ impl Value {
 
     /// Replaces the internal [`ValueType`] without incrementing the instance counter.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `value` - The new [`ValueType`] to set.
     pub fn set_value(&mut self, value: ValueType) {
@@ -518,7 +518,7 @@ impl Value {
     ///
     /// Increments the instance counter.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `bool` - The boolean to wrap.
     #[must_use]
@@ -530,7 +530,7 @@ impl Value {
     ///
     /// Increments the instance counter.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `int` - The integer to wrap.
     #[must_use]
@@ -542,7 +542,7 @@ impl Value {
     ///
     /// Increments the instance counter.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `array` - The slice of [`Value`]s to wrap.
     pub fn array(array: impl AsRef<[Value]>) -> Self {
@@ -553,7 +553,7 @@ impl Value {
     ///
     /// Increments the instance counter.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `str` - The string to wrap.
     pub fn string(str: impl AsRef<str>) -> Self {
@@ -564,7 +564,7 @@ impl Value {
     ///
     /// Increments the instance counter.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `str` - The string representation of a float.
     pub fn float(str: impl AsRef<str>) -> Self {
@@ -575,7 +575,7 @@ impl Value {
     ///
     /// Increments the instance counter.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `str` - The symbol name to wrap.
     pub fn symbol(str: impl AsRef<str>) -> Self {
@@ -586,7 +586,7 @@ impl Value {
     ///
     /// Increments the instance counter.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `str` - The string representation of a big integer.
     pub fn bigint(str: impl AsRef<str>) -> Self {
@@ -609,7 +609,7 @@ impl Value {
     ///
     /// Increments the instance counter.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `map` - The [`HashMap`] to wrap.
     #[must_use]
@@ -621,7 +621,7 @@ impl Value {
     ///
     /// Increments the instance counter.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `bytes` - The byte slice to wrap.
     #[must_use]
@@ -633,7 +633,7 @@ impl Value {
     ///
     /// Increments the instance counter.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `str` - The regex pattern to wrap.
     pub fn regexp(str: impl AsRef<str>) -> Self {
@@ -644,7 +644,7 @@ impl Value {
     ///
     /// Increments the instance counter.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `object` - The object map to wrap.
     #[must_use]
@@ -656,7 +656,7 @@ impl Value {
     ///
     /// Increments the instance counter.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
     /// - `map` - The struct map to wrap.
     #[must_use]
