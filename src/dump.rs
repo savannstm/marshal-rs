@@ -1,17 +1,25 @@
 //! Utilities for serializing JSON objects back to Marshal byte streams.
 
-use crate::{constants::*, types::*};
+#[allow(unused_imports)]
+use crate::load::load;
+use crate::{
+    constants::{
+        Constants, DEFAULT_SYMBOL, MARSHAL_VERSION, NUMBER_PADDING,
+        UTF8_ENCODING_SYMBOL,
+    },
+    types::{self, Object, Value, ValueType},
+};
 use gxhash::{HashMap, HashMapExt};
 use num_bigint::{BigInt, Sign};
 use std::{mem::take, str::FromStr};
 
-/// Struct for dumping [`Value`] to `Vec<u8>` Marshal data.
+/// Struct for dumping [`Value`] to [`Vec<u8>`] Marshal data.
 ///
 /// To construct the dumper, use [`Dumper::new`].
 ///
 /// To change instance var prefix, use [`Dumper::set_instance_var_prefix`].
 ///
-/// To dump the data from `Value`, use [`Dumper::dump`].
+/// To dump the data from [`Value`], use [`Dumper::dump`].
 pub struct Dumper<'a> {
     buffer: Vec<u8>,
     symbols: HashMap<String, usize>,
@@ -25,6 +33,7 @@ impl<'a> Dumper<'a> {
     /// To change instance var prefix, use [`Dumper::set_instance_var_prefix`].
     ///
     /// To dump the data from [`Value`], use [`Dumper::dump`].
+    #[must_use]
     pub fn new() -> Self {
         Self {
             buffer: Vec::with_capacity(1024),
@@ -66,7 +75,7 @@ impl<'a> Dumper<'a> {
         } else {
             Constants::SignNegative
         };
-        let size_in_u16 = ((bytes.len() + 1) / 2) as u8 + NUMBER_PADDING;
+        let size_in_u16 = bytes.len().div_ceil(2) as u8 + NUMBER_PADDING;
 
         self.write_byte(Constants::BigInt);
         self.write_byte(bigint_sign);
@@ -117,7 +126,7 @@ impl<'a> Dumper<'a> {
     }
 
     fn write_str(&mut self, string: &str) {
-        self.write_bytes(string.as_bytes())
+        self.write_bytes(string.as_bytes());
     }
 
     fn write_symbol(&mut self, symbol: &str) {
@@ -213,15 +222,11 @@ impl<'a> Dumper<'a> {
         self.write_byte(Constants::True);
     }
 
-    fn write_hashmap(
-        &mut self,
-        mut hashmap: crate::types::HashMap,
-        is_struct: bool,
-    ) {
+    fn write_hashmap(&mut self, mut hashmap: types::HashMap, is_struct: bool) {
         let mut object_len = hashmap.len();
 
         let default_symbol = Value::symbol(DEFAULT_SYMBOL);
-        let default_value = hashmap.get_mut(&default_symbol).map(|x| x.take());
+        let default_value = hashmap.get_mut(&default_symbol).map(Value::take);
 
         let hashmap_type = if default_value.is_some() {
             object_len -= 1;
@@ -315,8 +320,7 @@ impl<'a> Dumper<'a> {
                 self.remember_object(&value);
                 self.write_extensions(&value);
 
-                let class =
-                    unsafe { &mut *(&mut value as *mut Value) }.class_name();
+                let class = unsafe { &mut *(&raw mut value) }.class_name();
 
                 match *value {
                     ValueType::Null
@@ -335,7 +339,7 @@ impl<'a> Dumper<'a> {
                         self.write_bytes(bytes);
                     }
                     ValueType::Array(ref mut array) => {
-                        self.write_array(take(array))
+                        self.write_array(take(array));
                     }
                     ValueType::Object(ref mut object) => {
                         if !class_written {
@@ -350,7 +354,11 @@ impl<'a> Dumper<'a> {
                     }
                     ValueType::Class => {
                         if !class_written {
-                            self.write_class_name(Constants::Class, class, true)
+                            self.write_class_name(
+                                Constants::Class,
+                                class,
+                                true,
+                            );
                         }
                     }
                     ValueType::Module => {
@@ -385,7 +393,8 @@ impl<'a> Dumper<'a> {
 
     /// Serializes JSON object to a Marshal byte stream.
     ///
-    /// `instance_var_prefix` argument takes a string, and replaces instance variables' prefixes with Ruby's "@" prefix. It's value must be the same, as in `load()` function.
+    /// `instance_var_prefix` argument takes a string, and replaces instance variables' prefixes with Ruby's "@" prefix. It's value must be the same, as in [`load`] function.
+    ///
     /// # Example
     /// ```rust
     /// use marshal_rs::{Dumper, Value};
@@ -416,7 +425,7 @@ impl Default for Dumper<'_> {
 
 /// Serializes [`Value`] to a Marshal byte stream.
 ///
-/// `instance_var_prefix` argument takes a string, and replaces instance variables' prefixes with Ruby's "@" prefix. It's value must be the same, as in `load()` function.
+/// `instance_var_prefix` argument takes a string, and replaces instance variables' prefixes with Ruby's "@" prefix. It's value must be the same, as in [`load`] function.
 ///
 /// # Example
 /// ```rust
@@ -428,6 +437,7 @@ impl Default for Dumper<'_> {
 /// let bytes: Vec<u8> = dump(json, None);
 /// assert_eq!(&bytes, &[0x04, 0x08, 0x30]);
 /// ```
+#[must_use]
 pub fn dump(value: Value, instance_var_prefix: Option<&str>) -> Vec<u8> {
     let mut dumper = Dumper::new();
 

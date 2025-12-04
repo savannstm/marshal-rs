@@ -18,13 +18,14 @@ fn main() {
 
     let entries = read_dir(&data_path).unwrap();
     let mut dumper = Dumper::new();
-    let mut loader = Loader::new();
 
     for entry in entries.flatten() {
         let path = entry.path();
         let filename = entry.file_name();
 
-        let loaded = loader.load(&read(path).unwrap()).unwrap();
+        let buf = read(path).unwrap();
+        let mut loader = Loader::new();
+        let loaded = loader.load(&buf).unwrap();
 
         if filename != "Scripts.rvdata2" {
             write(loaded_path.join(&filename), to_string(&loaded).unwrap())

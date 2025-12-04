@@ -1,6 +1,13 @@
 //! Utilities for serializing Marshal byte streams to JSON.
 
-use crate::{VALUE_INSTANCE_COUNTER, constants::*, types::*};
+use crate::{
+    VALUE_INSTANCE_COUNTER,
+    constants::{
+        Constants, DEFAULT_SYMBOL, MARSHAL_VERSION, NON_UTF8_ENCODING_SYMBOL,
+        NUMBER_PADDING, UTF8_ENCODING_SYMBOL,
+    },
+    types::{HashMap, Object, SafeCell, Value, ValueType},
+};
 use encoding_rs::{Encoding, UTF_8};
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
@@ -43,7 +50,7 @@ pub enum LoadError {
 ///
 /// To change its string mode or instance var prefix, use [`Loader::set_string_mode`] and [`Loader::set_instance_var_prefix`] respectively.
 ///
-/// To load the data from `&[u8]` buffer, use [`Loader::load`].
+/// To load the data from [`&[u8]`] buffer, use [`Loader::load`].
 pub struct Loader<'a> {
     buffer: &'a [u8],
     byte_position: usize,
@@ -58,7 +65,8 @@ impl<'a> Loader<'a> {
     ///
     /// To change its string mode or instance var prefix, use [`Loader::set_string_mode`] and [`Loader::set_instance_var_prefix`] respectively.
     ///
-    /// To load the data from `&[u8]` buffer, use [`Loader::load`].
+    /// To load the data from [`&[u8]`] buffer, use [`Loader::load`].
+    #[must_use]
     pub fn new() -> Self {
         Self {
             buffer: &[],
@@ -84,9 +92,7 @@ impl<'a> Loader<'a> {
 
     #[inline]
     fn read_byte(&mut self) -> Result<u8, LoadError> {
-        let byte = if let Some(&byte) = self.buffer.get(self.byte_position) {
-            byte
-        } else {
+        let Some(&byte) = self.buffer.get(self.byte_position) else {
             return Err(LoadError::UnexpectedEOF);
         };
 
@@ -96,12 +102,10 @@ impl<'a> Loader<'a> {
 
     #[inline]
     fn read_bytes(&mut self, amount: usize) -> Result<&[u8], LoadError> {
-        let bytes = if let Some(bytes) = self
+        let Some(bytes) = self
             .buffer
             .get(self.byte_position..self.byte_position + amount)
-        {
-            bytes
-        } else {
+        else {
             return Err(LoadError::UnexpectedEOF);
         };
 
@@ -129,9 +133,9 @@ impl<'a> Loader<'a> {
             // Otherwise fixnum is a single byte and we read it
             _ => {
                 if int_size > 0 {
-                    int_size as i32 - NUMBER_PADDING as i32
+                    i32::from(int_size) - i32::from(NUMBER_PADDING)
                 } else {
-                    int_size as i32 + NUMBER_PADDING as i32
+                    i32::from(int_size) + i32::from(NUMBER_PADDING)
                 }
             }
         })
@@ -299,7 +303,7 @@ impl<'a> Loader<'a> {
             _ => {
                 let float_string_bytes = float_string.as_bytes();
                 let float_end =
-                    float_string_bytes.iter().rposition(|x| x.is_ascii_digit());
+                    float_string_bytes.iter().rposition(u8::is_ascii_digit);
 
                 if let Some(end) = float_end {
                     &float_string[..=end]
@@ -526,20 +530,26 @@ impl<'a> Loader<'a> {
 
     /// Serializes Ruby Marshal byte stream to JSON.
     ///
-    /// string_mode arguments takes a StringMode enum value, and decodes strings either as binary data or as string objects.
+    /// `string_mode` arguments takes a [`StringMode`] enum value, and decodes strings either as binary data or as string objects.
     ///
-    /// instance_var_prefix argument takes a string, and replaces instance variables' "@" prefixes by this string.
+    /// `instance_var_prefix` argument takes a string, and replaces instance variables' "@" prefixes by this string.
     ///
-    /// Returns a Result, indicating whether load was successful or not.
-    /// Returns an Err when:
-    /// * Passed byte stream is of non-4.8 Marshal version (indicated by two first bytes).
-    /// * Passed byte stream's data is invalid.
+    /// # Returns
+    ///
+    /// - [`Value`] if load was successful.
+    /// - [`LoadError`] otherwise.
+    ///
+    /// # Errors
+    ///
+    /// - [`LoadError::InvalidMarshalVersion`] - when passed byte stream is of non-4.8 Marshal version (indicated by two first bytes).
+    /// - [`LoadError::UnexpectedEOF`] - when passed byte stream's data is invalid.
+    ///
     /// # Example
     /// ```rust
     /// use marshal_rs::{Loader, Value};
     ///
     /// // Bytes slice of Ruby Marshal data
-    /// // Files with Marshal data can be read with std::fs::read()
+    /// // Files with Marshal data can be read with std::fs::read
     /// let bytes: [u8; 3] = [0x04, 0x08, 0x30]; // null
     ///
     /// // Initialize loader
@@ -551,15 +561,12 @@ impl<'a> Loader<'a> {
     /// assert_eq!(json, Value::null());
     /// ```
     #[inline]
-    pub fn load(&mut self, buffer: &[u8]) -> Result<Value, LoadError> {
-        self.buffer = unsafe { &*(buffer as *const [u8]) };
+    pub fn load(&mut self, buffer: &'a [u8]) -> Result<Value, LoadError> {
+        self.buffer = buffer;
 
-        let marshal_version =
-            if let Some(marshal_version) = self.buffer.get(0..2) {
-                marshal_version
-            } else {
-                return Err(LoadError::UnexpectedEOF);
-            };
+        let Some(marshal_version) = self.buffer.get(0..2) else {
+            return Err(LoadError::UnexpectedEOF);
+        };
 
         if marshal_version != MARSHAL_VERSION {
             return Err(LoadError::InvalidMarshalVersion);
@@ -591,20 +598,26 @@ impl Default for Loader<'_> {
 
 /// Serializes Ruby Marshal byte stream to JSON.
 ///
-/// Automatically decides when to convert string to UTF-8. If you want to try to convert all strings to UTF-8, use `load_utf8()`. If you want to keep all strings binary, use `load_binary()`.
+/// Automatically decides whether to convert strings to UTF-8. If you want to try to convert all strings to UTF-8, use [`load_utf8`]. If you want to keep all strings binary, use [`load_binary`].
 ///
-/// `instance_var_prefix` argument takes an `Option<&str>`, and replaces instance variables' "@" prefixes by this string.
+/// `instance_var_prefix` argument takes an [`Option<&str>`], and replaces instance variables' "@" prefixes by this string.
 ///
-/// Returns a `Result<Value, LoadError>`, indicating whether load was successful or not.
-/// Returns `Err(InvalidMarshalVersion)`, when passed byte stream is of non-4.8 Marshal version (indicated by two first bytes).
-/// Returns `Err(UnexpectedEOF)`, when passed byte stream's data is invalid.
+/// # Returns
+///
+/// - [`Value`] if load was successful.
+/// - [`LoadError`] otherwise.
+///
+/// # Errors
+///
+/// - [`LoadError::InvalidMarshalVersion`] when passed byte stream is of non-4.8 Marshal version (indicated by two first bytes).
+/// - [`LoadError::UnexpectedEOF`] when passed byte stream's data is invalid.
 ///
 /// # Example
 /// ```rust
 /// use marshal_rs::{load, Value};
 ///
 /// // Bytes slice of Ruby Marshal data
-/// // Files with Marshal data can be read with std::fs::read()
+/// // Files with Marshal data can be read with std::fs::read
 /// let bytes: [u8; 3] = [0x04, 0x08, 0x30]; // null
 ///
 /// // Serialize bytes to a Value
@@ -628,20 +641,26 @@ pub fn load(
 
 /// Serializes Ruby Marshal byte stream to JSON.
 ///
-/// This function tries to convert all encountered strings to UTF-8, and falls back to binary format if it's impossible. If you want to convert only UTF-8 strings to UTF-8, use `load()`. If you want to keep all strings binary, use `load_binary()`.
+/// This function tries to convert all encountered strings to UTF-8, and falls back to binary format if it's impossible. If you want to convert only UTF-8 strings to UTF-8, use [`load`]. If you want to keep all strings binary, use [`load_binary`].
 ///
-/// `instance_var_prefix` argument takes an `Option<&str>`, and replaces instance variables' "@" prefixes by this string.
+/// `instance_var_prefix` argument takes an [`Option<&str>`], and replaces instance variables' "@" prefixes by this string.
 ///
-/// Returns a `Result<Value, LoadError>`, indicating whether load was successful or not.
-/// Returns `Err(InvalidMarshalVersion)`, when passed byte stream is of non-4.8 Marshal version (indicated by two first bytes).
-/// Returns `Err(UnexpectedEOF)`, when passed byte stream's data is invalid.
+/// # Returns
+///
+/// - [`Value`] if load was successful.
+/// - [`LoadError`] otherwise.
+///
+/// # Errors
+///
+/// - [`LoadError::InvalidMarshalVersion`] - when passed byte stream is of non-4.8 Marshal version (indicated by two first bytes).
+/// - [`LoadError::UnexpectedEOF`] - when passed byte stream's data is invalid.
 ///
 /// # Example
 /// ```rust
 /// use marshal_rs::{load, Value};
 ///
 /// // Bytes slice of Ruby Marshal data
-/// // Files with Marshal data can be read with std::fs::read()
+/// // Files with Marshal data can be read with std::fs::read
 /// let bytes: [u8; 3] = [0x04, 0x08, 0x30]; // null
 ///
 /// // Serialize bytes to a Value
@@ -666,20 +685,26 @@ pub fn load_utf8(
 
 /// Serializes Ruby Marshal byte stream to JSON.
 ///
-/// This function doesn't try to convert any string to UTF-8, and keeps everything binary. Use if you want to convert only UTF-8 strings to strings, use `load()`. If you want to try to convert all strings to UTF-8, use `load_utf8()`.
+/// This function doesn't try to convert any string to UTF-8, and keeps everything binary. Use if you want to convert only UTF-8 strings to strings, use [`load`]. If you want to try to convert all strings to UTF-8, use [`load_utf8`].
 ///
-/// `instance_var_prefix` argument takes an `Option<&str>`, and replaces instance variables' "@" prefixes by this string.
+/// `instance_var_prefix` argument takes an [`Option<&str>`], and replaces instance variables' "@" prefixes by this string.
 ///
-/// Returns a `Result<Value, LoadError>`, indicating whether load was successful or not.
-/// Returns `Err(InvalidMarshalVersion)`, when passed byte stream is of non-4.8 Marshal version (indicated by two first bytes).
-/// Returns `Err(UnexpectedEOF)`, when passed byte stream's data is invalid.
+/// # Returns
+///
+/// - [`Value`] if load was successful.
+/// - [`LoadError`] otherwise.
+///
+/// # Errors
+///
+/// - [`LoadError::InvalidMarshalVersion`] - when passed byte stream is of non-4.8 Marshal version (indicated by two first bytes).
+/// - [`LoadError::UnexpectedEOF`] - when passed byte stream's data is invalid.
 ///
 /// # Example
 /// ```rust
 /// use marshal_rs::{load, Value};
 ///
 /// // Bytes slice of Ruby Marshal data
-/// // Files with Marshal data can be read with std::fs::read()
+/// // Files with Marshal data can be read with std::fs::read
 /// let bytes: [u8; 3] = [0x04, 0x08, 0x30]; // null
 ///
 /// // Serialize bytes to a Value
