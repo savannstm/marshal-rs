@@ -10,21 +10,21 @@ It is capable of :fire: **_BLAZINGLY FAST_** loading data from dumped Ruby Marsh
 
 ## Overview
 
-This crate has two main structs, `Loader` and `Dumper`, along with helper functions that use them internally. There's three load functions: `load()`, `load_utf8()`, `load_binary()`, and a single dump function: `dump()`.
+This crate has two main structs, `Loader` and `Dumper`, along with helper functions that use them internally. There's three load functions: `load`, `load_utf8`, `load_binary`, and a single dump function: `dump`.
 
-`load()` takes a `&[u8]`, consisting of Marshal data bytes (that can be read using `std::fs::read()`) as its only argument, and outputs `Value`.
+`load` takes a `&[u8]`, consisting of Marshal data bytes (that can be read using `std::fs::read`) as its only argument, and outputs `Value`.
 
-`dump()`, in turn, takes `marshal_rs::Value` as its only argument and serializes it back to `Vec<u8>` Marshal byte stream. It does not preserve strings' initial encoding, writing all strings as UTF-8 encoded.
+`dump`, in turn, takes `marshal_rs::Value` as its only argument and serializes it back to `Vec<u8>` Marshal byte stream. It does not preserve strings' initial encoding, writing all strings as UTF-8 encoded.
 
-By default, in `load()` function, Ruby strings, that include encoding instance variable, are serialized to JSON strings, and those which don't, serialized to byte arrays.
+By default, in `load` function, Ruby strings, that include encoding instance variable, are serialized to JSON strings, and those which don't, serialized to byte arrays.
 
-`load_utf8()` function tries to convert arrays without instance variable to string, and produces string if array is valid UTF-8, and object otherwise.
+`load_utf8` function tries to convert arrays without instance variable to string, and produces string if array is valid UTF-8, and object otherwise.
 
-`load_binary()` function converts all strings to objects.
+`load_binary` function converts all strings to objects.
 
-This behavior also can be controlled in `Loader` by calling `set_string_mode()`.
+This behavior also can be controlled in `Loader` by calling `Loader::set_string_mode`.
 
-You can manage the prefix of instance variables using `instance_var_prefix` argument in `load()` and `dump()`, or by using `set_instance_var_prefix()` function in `Loader` or `Dumper`. Passed string replaces "@" instance variables' prefixes.
+You can manage the prefix of instance variables using `instance_var_prefix` argument in `load` and `dump`, or by using `Loader::set_instance_var_prefix` or `Dumper::set_instance_var_prefix`. Passed string replaces "@" instance variables' prefixes.
 
 To avoid loss of precision, floats are stored as strings.
 
@@ -49,16 +49,17 @@ The table shows, how `marshal-rs` serializes Ruby types to Value:
 | `Object.new`                               | `IndexMap<String, Value>`                 |
 | `Class`, `Module`                          | `null` (Doesn't dump any data to Marshal) |
 
-Value can be stringified and written to JSON using `serde_json::to_string` function. That will wrap each value in an object, that holds its metadata as object keys. For example, `null` will become
+Value can be stringified and written to JSON using `Value::to_string` function. That will wrap each non-trivial value in an object, that holds its metadata as object keys. It some metadata field is empty, it won't write it to JSON. For trivial values (null, bool, integer) it will insert the literal value. For example:
+
+`null` becomes: `null`.
+
+`[null, true, 1]` becomes:
 
 ```json
 {
     "__id": number,
-    "__class": "",
-    "__type": 0,
-    "__value": null,
-    "__extensions": [],
-    "__flags": 0
+    "__type": 9,
+    "__value": [null, true, 1],
 }
 ```
 
@@ -66,7 +67,7 @@ object.
 
 Possible `__type` values are defined in `src/types.rs`:
 
-```rust
+```rust compile_fail
 pub enum ValueType {
     #[default]
     Null = 0,
@@ -89,7 +90,7 @@ pub enum ValueType {
 
 Possible `__flags` values are defined in `src/types.rs`:
 
-```rust
+```rust compile_fail
 struct ValueFlags: u8 {
     const None = 0;
     const OldModule = 1;
@@ -116,7 +117,7 @@ If something is missing in the tests, open an issue or submit a pull request.
 
 ## Example
 
-```rust
+```rust no_run
 use std::fs::read;
 use marshal_rs::{load, dump, Value};
 
@@ -132,17 +133,17 @@ fn main() {
     let marshal_data = [0x04, 0x08, 0x30];
 
     // Serializing to json
-    // `load()` takes a `&[u8]` as argument, so `Vec<u8>` must be borrowed
+    // `load` takes a `&[u8]` as argument, so `Vec<u8>` must be borrowed
     let serialized_to_json: Value = load(&marshal_data, None).unwrap();
 
-    // Here you may stringify Value using `serde_json::to_string()`, and
-    // `std::fs::write()` it to file
+    // Here you may stringify Value using `Value::to_string`, and
+    // `std::fs::write` it to file
 
     // Serializing back to marshal
-    // `dump()` requires owned Value as argument
+    // `dump` requires owned Value as argument
     let serialized_to_marshal: Vec<u8> = dump(serialized_to_json, None);
 
-    // Here you may `std::fs::write()` serialized Marshal data to file
+    // Here you may `std::fs::write` serialized Marshal data to file
 }
 ```
 
