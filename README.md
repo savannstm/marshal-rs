@@ -157,6 +157,18 @@ Minimum supported Rust version is 1.63.0.
 -   [TypeScript implementation of Marshal](https://github.com/hyrious/marshal) (This project inspired me to start working on this)
 -   [Official documentation for Marshal format](https://docs.ruby-lang.org/en/master/marshal_rdoc.html) (Mostly useless)
 
+## Support
+
+[Me](https://github.com/savannstm), the maintainer of this project, is a poor college student from Eastern Europe.
+
+If you could, please consider supporting us through:
+
+-   [Ko-fi](https://ko-fi.com/savannstm)
+-   [Patreon](https://www.patreon.com/cw/savannstm)
+-   [Boosty](https://boosty.to/mcdeimos)
+
+Even if you don't, it's fine. We'll continue to do as we right now.
+
 ## License
 
 Project is licensed under WTFPL.
