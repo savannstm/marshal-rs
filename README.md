@@ -149,13 +149,13 @@ fn main() {
 
 ## MSRV
 
-Minimum supported Rust version is 1.63.0.
+Minimum supported Rust version is 1.82.0.
 
 ## References
 
--   [marshal.c](https://github.com/ruby/ruby/blob/master/marshal.c) (Had to compile Ruby manually, and add debug prints to marshal.c, to even figure out what's going on)
--   [TypeScript implementation of Marshal](https://github.com/hyrious/marshal) (This project inspired me to start working on this)
--   [Official documentation for Marshal format](https://docs.ruby-lang.org/en/master/marshal_rdoc.html) (Mostly useless)
+- [marshal.c](https://github.com/ruby/ruby/blob/master/marshal.c) (Had to compile Ruby manually, and add debug prints to marshal.c, to even figure out what's going on)
+- [TypeScript implementation of Marshal](https://github.com/hyrious/marshal) (This project inspired me to start working on this)
+- [Official documentation for Marshal format](https://docs.ruby-lang.org/en/master/marshal_rdoc.html) (Mostly useless)
 
 ## Support
 
@@ -163,9 +163,9 @@ Minimum supported Rust version is 1.63.0.
 
 If you could, please consider supporting us through:
 
--   [Ko-fi](https://ko-fi.com/savannstm)
--   [Patreon](https://www.patreon.com/cw/savannstm)
--   [Boosty](https://boosty.to/mcdeimos)
+- [Ko-fi](https://ko-fi.com/savannstm)
+- [Patreon](https://www.patreon.com/cw/savannstm)
+- [Boosty](https://boosty.to/mcdeimos)
 
 Even if you don't, it's fine. We'll continue to do as we right now.
 
