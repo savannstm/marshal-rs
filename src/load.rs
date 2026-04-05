@@ -333,18 +333,21 @@ impl<'a> Loader<'a> {
             let key_rc = self.read_next()?;
             let value_rc = self.read_next()?;
 
-            let key = key_rc.get();
-            let value = value_rc.get();
+            // Clone rather than take() — key_rc and value_rc may be Rc::clone'd
+            // from self.symbols (for SymbolLink) or self.objects (for ObjectLink).
+            // Taking would drain the shared cell and break subsequent references.
+            let key = key_rc.get().clone();
+            let value = value_rc.get().clone();
 
-            hashmap.insert(key.take(), value.take());
+            hashmap.insert(key, value);
         }
 
         if has_default_value {
             let default_value_rc = self.read_next()?;
-            let default_value = default_value_rc.get();
+            let default_value = default_value_rc.get().clone();
 
             let default_value_key = Value::symbol(DEFAULT_SYMBOL);
-            hashmap.insert(default_value_key, default_value.take());
+            hashmap.insert(default_value_key, default_value);
         }
 
         hashmap_rc.get().set_value(ValueType::HashMap(hashmap));
