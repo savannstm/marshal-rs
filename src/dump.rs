@@ -104,7 +104,7 @@ impl<'a> Dumper<'a> {
             1..=122 => buf.push(number as u8 + NUMBER_PADDING),
             -123..=-1 => buf.push(number as u8 - NUMBER_PADDING),
             I8_MIN..=I8_MAX => {
-                buf.push(1);
+                buf.push(if number < 0 { 255 } else { 1 });
                 buf.push(number as u8);
             }
             I16_MIN..=I16_MAX => {
