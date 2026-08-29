@@ -6,8 +6,8 @@ v3 is a from-scratch rewrite of the crate. The old `Value` tree (an `Rc<SafeCell
 
 This crate has some ports:
 
-- [C API](./crates/rpgmasd-capi/) - C bindings, installable via `cargo-c`.
-- [WASM](./crates/rpgmasd-wasm/) - WASM bindings generated from Rust code.
+- [C API](./crates/marshal-rs-capi/) - C bindings, installable via `cargo-c`.
+- [WASM](./crates/marshal-rs-wasm/) - WASM bindings generated from Rust code.
 
 ## Installation
 
