@@ -1,0 +1,2 @@
+crates/marshal-rs-capi/**/*.c linguist-vendored
+crates/marshal-rs-capi/**/*.h linguist-vendored
