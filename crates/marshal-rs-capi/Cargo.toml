@@ -1,9 +1,9 @@
 [package]
 name = "marshal-rs-capi"
-version = "3.0.0"
-authors = ["savannstm <savannstm@gmail.com>"]
-edition = "2021"
-rust-version = "1.73.0"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "C API for marshal-rs, buildable and installable with cargo-c."
 repository = "https://github.com/savannstm/marshal-rs"
 license-file = "../../LICENSE.md"

@@ -1,8 +1,8 @@
 [package]
 name = "marshal-rs-wasm"
-version = "3.0.0"
-edition = "2021"
-rust-version = "1.73.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "WASM bindings for marshal-rs: a Ruby-lang Marshal implementation."
 repository = "https://github.com/savannstm/marshal-rs"
 documentation = "https://github.com/savannstm/marshal-rs/tree/master/crates/marshal-rs-wasm"
@@ -12,6 +12,7 @@ publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+doctest = false
 
 [dependencies]
 marshal-rs = { path = "../..", default-features = false, features = [
