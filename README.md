@@ -58,6 +58,15 @@ for item in root.array() {
 
 `dump(&arena)` writes it back to a `Vec<u8>` Marshal byte stream - infallible: every `Arena` reachable through the public API is internally consistent by construction, so there's nothing for it to fail on.
 
+### In-place mutation
+
+An `Arena` can be mutated after loading. Two categories of methods apply:
+
+- **Slot setters** (`set_array_*`/`set_hash_*`/`set_member_*`) repoint a container slot to a freshly-pushed value, leaving the old value itself untouched (now unreferenced but harmless garbage - the arena never reclaims).
+- **Content setters** (`set_*_content`/`set_string_text`/`set_fixnum_value`) overwrite a node's payload in place while keeping its `ValueId`. Every reference to that node - reachable from more than one container via Marshal's `@n` back-reference - sees the new content at once, exactly as though the object were mutated in Ruby.
+
+The distinction matters for shared values tracked across the wire: `dump` records object identity by `ValueId`, so a content setter updates every reference at once, whereas a slot setter only updates the one container you called it on. There's no content setter for `Symbol` - mutating an interned symbol's bytes would silently rewrite all instances of it in the file, breaking correctness for ivars, class names, etc. that may happen to share the same symbol.
+
 ## String encoding
 
 This crate never transcodes or validates text content - a loaded string's bytes are exactly what was on the wire, in whatever encoding they were declared in. A string is `Kind::Str` (carries a declared encoding) if it had Ruby's `E` or `encoding` instance variable at load time, and `Kind::Bytes` (implicitly `ASCII-8BIT`/binary, no ivar was ever written for it) otherwise.
