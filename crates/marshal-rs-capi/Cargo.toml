@@ -1,0 +1,43 @@
+[package]
+name = "marshal-rs-capi"
+version = "3.0.0"
+authors = ["savannstm <savannstm@gmail.com>"]
+edition = "2021"
+rust-version = "1.73.0"
+description = "C API for marshal-rs, buildable and installable with cargo-c."
+repository = "https://github.com/savannstm/marshal-rs"
+license-file = "../../LICENSE.md"
+publish = false
+
+[lib]
+name = "marshal_rs"
+crate-type = ["rlib", "cdylib", "staticlib"]
+doctest = false
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
+
+[features]
+default = ["std"]
+std = ["marshal-rs/std"]
+capi = []
+
+[dependencies]
+marshal-rs = { path = "../..", default-features = false, features = ["alloc"] }
+
+[package.metadata.capi.header]
+name = "marshal"
+subdirectory = false
+# Generation is disabled to not generate a header
+# using cbindgen, we provide a header ourselves
+generation = false
+
+[package.metadata.capi.pkg_config]
+name = "marshal-rs"
+filename = "marshal-rs"
+
+[package.metadata.capi.library]
+name = "marshal_rs"

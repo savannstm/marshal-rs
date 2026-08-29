@@ -1,0 +1,29 @@
+[package]
+name = "marshal-rs-wasm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.73.0"
+description = "WASM bindings for marshal-rs: a Ruby-lang Marshal implementation."
+repository = "https://github.com/savannstm/marshal-rs"
+documentation = "https://github.com/savannstm/marshal-rs/tree/master/crates/marshal-rs-wasm"
+license-file = "LICENSE.md"
+keywords = ["marshal", "ruby", "wasm", "serialize", "deserialize"]
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+marshal-rs = { path = "../..", default-features = false, features = [
+    "alloc",
+    "serde",
+] }
+serde = "1.0.229"
+serde-wasm-bindgen = "0.6.5"
+wasm-bindgen = "=0.2.127"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.77"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O", "--enable-bulk-memory"]

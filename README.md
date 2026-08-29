@@ -1,161 +1,116 @@
 # marshal-rs
 
-**`marshal-rs` is a complete Rust implementation of Ruby-lang's `Marshal`.**
+**`marshal-rs` is a BLAZINGLY :crab::crab: FAST:fire::fire: `no_std`-capable Rust implementation of Ruby-lang's `Marshal` binary format.**
 
-It is capable of :fire: **_BLAZINGLY FAST_** loading data from dumped Ruby Marshal files, as well as :fire: **_BLAZINGLY FAST_** dumping it back to Marshal format.
+v3 is a from-scratch rewrite of the crate. The old `Value` tree (an `Rc<SafeCell<Value>>` graph, deep-cloned on every load) is gone; in its place is a flat `Arena` of 16-byte `Copy` nodes addressed by `u32` handles, so object links resolve as an index copy instead of a subtree clone, cycles are representable without `Rc`/`RefCell`, and the core tokenizer works with zero allocation on a genuinely freestanding target. See [CHANGELOG-like notes below](#coming-from-v2) if you're upgrading.
+
+This crate has some ports:
+
+- [C API](./crates/rpgmasd-capi/) - C bindings, installable via `cargo-c`.
+- [WASM](./crates/rpgmasd-wasm/) - WASM bindings generated from Rust code.
 
 ## Installation
 
-`cargo add marshal-rs`
+```bash
+cargo add marshal-rs
+```
 
-## Overview
+## Feature tiers
 
-This crate has two main structs, `Loader` and `Dumper`, along with helper functions that use them internally. There's three load functions: `load`, `load_utf8`, `load_binary`, and a single dump function: `dump`.
+| Feature  | Pulls in | Gives you                                                                                                                                                                                                                                                    |
+| -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| _(none)_ | -        | `wire`/`reader`/`writer`: a `no_std`, allocation-free tokenizer and token writer over `&[u8]` / a fixed `&mut [u8]`. Genuinely freestanding - usable from embedded Rust or through `marshal-rs-capi` in a C/C++ project with no heap at the tokenizer level. |
+| `alloc`  | `alloc`  | `Arena`, `ValueRef`, `load`/`dump` - the DOM most users want.                                                                                                                                                                                                |
+| `std`    | `alloc`  | `std::io`-backed I/O.                                                                                                                                                                                                                                        |
+| `serde`  | `alloc`  | Streaming `Serialize`/`Deserialize` for `Arena` (JSON or any other serde format - see below).                                                                                                                                                                |
 
-`load` takes a `&[u8]`, consisting of Marshal data bytes (that can be read using `std::fs::read`) as its only argument, and outputs `Value`.
+A C-callable surface over the `Arena` API is a separate workspace crate, `marshal-rs-capi`, not a feature of this one - see [`no_std` / FFI](#no_std--ffi) below.
 
-`dump`, in turn, takes `marshal_rs::Value` as its only argument and serializes it back to `Vec<u8>` Marshal byte stream. It does not preserve strings' initial encoding, writing all strings as UTF-8 encoded.
+`std` and `serde` are enabled by default. Disable them for a leaner build:
 
-By default, in `load` function, Ruby strings, that include encoding instance variable, are serialized to JSON strings, and those which don't, serialized to byte arrays.
+```toml
+marshal-rs = { version = "3", default-features = false, features = ["alloc"] }
+```
 
-`load_utf8` function tries to convert arrays without instance variable to string, and produces string if array is valid UTF-8, and object otherwise.
+For genuinely freestanding use (no allocator at all), depend with `default-features = false` and use only `marshal_rs::{wire, reader, writer}`.
 
-`load_binary` function converts all strings to objects.
+## The `Arena` model
 
-This behavior also can be controlled in `Loader` by calling `Loader::set_string_mode`.
+`load` returns an `Arena<'a>` that borrows strings, bignum digits, and float text directly out of the input buffer (`Cow<'a, [u8]>` under the hood) - no copy on load beyond what genuinely needs to leave the buffer's lifetime. Call `.into_owned()` to detach it.
 
-You can manage the prefix of instance variables using `instance_var_prefix` argument in `load` and `dump`, or by using `Loader::set_instance_var_prefix` or `Dumper::set_instance_var_prefix`. Passed string replaces "@" instance variables' prefixes.
+Values are read through `ValueRef`, a cheap `Copy` cursor:
 
-To avoid loss of precision, floats are stored as strings.
+```rust
+use marshal_rs::{load, ValueRef};
 
-If Marshal file contains any extra float mantissa bits, `marshal-rs` discards them. They aren't written by latest 4.8 version of Marshal, but it still preserves them, if encounters any. `marshal-rs` does not.
+let bytes: &[u8] = /* read from a .rvdata2 file, etc. */
+    &[0x04, 0x08, 0x5b, 0x08, 0x69, 0x06, 0x69, 0x07, 0x69, 0x08];
 
-The reason this crate wraps around `serde_json::Value`, is because it needs to cleanly track unique object instances and object metadata.
+let arena = load(bytes)?;
+let root = ValueRef::root(&arena);
+for item in root.array() {
+    if let Some(n) = item.as_i64() {
+        println!("{n}");
+    }
+}
+# Ok::<(), marshal_rs::ReadError>(())
+```
 
-The table shows, how `marshal-rs` serializes Ruby types to Value:
+(`Arena` doesn't implement `core::ops::Index` - a `ValueRef` is constructed fresh on every call, so there's no stored value to hand back a `&Output` to. Use `ValueRef::at(index)` / `ValueRef::get("@ivar")` / `ValueRef::lookup(key)` instead of `v[i]` / `v["key"]`.)
 
-| Ruby object                                | Serialized to Value                       |
-| ------------------------------------------ | ----------------------------------------- |
-| `nil`                                      | `null`                                    |
-| `true`, `false`                            | `true`, `false`                           |
-| `1337` (Integer)                           | `1337`                                    |
-| `36893488147419103232` (Big Integer)       | `"36893488147419103232"`                  |
-| `13.37` (Float)                            | `"13.37"`                                 |
-| `"ligma"` (String, with instance variable) | `"ligma"`                                 |
-| `:ligma` (Symbol)                          | `"ligma"`                                 |
-| `/lgma/i` (Regex)                          | `"/lgma/i"`                               |
-| `[ ... ]` (Array)                          | `[ ... ]`                                 |
-| `Hash`, `Struct`                           | `IndexMap<Value, Value>`                  |
-| `Object.new`                               | `IndexMap<String, Value>`                 |
-| `Class`, `Module`                          | `null` (Doesn't dump any data to Marshal) |
+`dump(&arena)` writes it back to a `Vec<u8>` Marshal byte stream - infallible: every `Arena` reachable through the public API is internally consistent by construction, so there's nothing for it to fail on.
 
-Value can be stringified and written to JSON using `Value::to_string` function. That will wrap each non-trivial value in an object, that holds its metadata as object keys. It some metadata field is empty, it won't write it to JSON. For trivial values (null, bool, integer) it will insert the literal value. For example:
+## String encoding
 
-`null` becomes: `null`.
+This crate never transcodes or validates text content - a loaded string's bytes are exactly what was on the wire, in whatever encoding they were declared in. A string is `Kind::Str` (carries a declared encoding) if it had Ruby's `E` or `encoding` instance variable at load time, and `Kind::Bytes` (implicitly `ASCII-8BIT`/binary, no ivar was ever written for it) otherwise.
 
-`[null, true, 1]` becomes:
+The declared encoding is exposed as a compact id (`ValueRef::encoding_id`) plus its name (`ValueRef::encoding_name`), backed by a fixed table of Ruby's ~100 named encodings (`marshal_rs::encoding`). A name outside the table - a future Ruby encoding, or a custom one from a native extension - still round-trips byte-exact via `ENCODING_CUSTOM` and a side table recording the exact original name, so the table only needs updating to make a newly-common name cheap, not for correctness. `Kind::Regexp` carries the same tag, since Ruby wraps a Regexp's source in the identical `E`/`encoding` ivar mechanism.
+
+Converting the bytes to a particular Rust string type is left to you: pick whatever text stack fits your embedding (`encoding_rs`, ICU, ...). `ValueRef::as_str` is a convenience that succeeds only if the bytes happen to validate as UTF-8, independent of what was actually declared (a `String` can be tagged UTF-8 while its bytes don't validate - `valid_encoding?` can be `false` in Ruby too; RPG Maker's own zlib-compressed script data is tagged this way) - `ValueRef::as_bytes` always works.
+
+Every declared encoding round-trips byte-for-byte on dump - not just UTF-8/ASCII - since nothing is ever re-encoded; the original `E`/`encoding` ivar (or its absence, for `ASCII-8BIT`) is reconstructed from the stored id/name.
+
+## `serde`
+
+With the `serde` feature, `Arena` implements `Serialize`/`Deserialize` directly against the `Serializer`/`Deserializer` traits - no intermediate DOM, and it works with any serde data format, not just JSON. `Nil`/bools/ fixnums serialize as bare JSON primitives; everything else becomes an envelope object:
 
 ```json
 {
-    "__id": number,
-    "__type": 9,
-    "__value": [null, true, 1],
+  "__type": "array",
+  "__class": "MyArray",
+  "__flags": ["user_class"],
+  "__value": [1, 2, 3]
 }
 ```
 
-object.
+A `Hash`'s `__value` is a JSON array of `[key, value]` pairs, not a JSON object - Ruby hash keys aren't always strings. `__type` must be the object's first key (this is `marshal-rs`'s own wire format, not general JSON); every other key may appear in any order. See `src/ser.rs` for the full envelope reference. Object links/cycles are not preserved across a JSON round-trip - shared or self-referential structure is flattened into independent copies.
 
-Possible `__type` values are defined in `src/types.rs`:
+A `Str`/`Regexp` with a non-default declared encoding carries an extra `__encoding` field naming it (e.g. `"Shift_JIS"`); a `Str`'s `__value` is plain text when its bytes happen to validate as UTF-8 (the common case, and far more readable), or a JSON byte array otherwise - deserializing accepts either shape, and the encoding always round-trips byte-exact regardless of which shape was used.
 
-```rust compile_fail
-pub enum ValueType {
-    #[default]
-    Null = 0,
-    Bool(bool) = 1,
-    Integer(i32) = 2,
-    Float(String) = 3,
-    Bigint(String) = 4,
-    String(String) = 5,
-    Bytes(Vec<u8>) = 6,
-    Symbol(String) = 7,
-    Regexp(String) = 8,
-    Array(Vec<Value>) = 9,
-    Object(ObjectMap) = 10,
-    Class = 11,
-    Module = 12,
-    HashMap(HashMap) = 13,
-    Struct(HashMap) = 14,
-}
-```
+## Coming from v2
 
-Possible `__flags` values are defined in `src/types.rs`:
+- `Loader`/`Dumper` structs and `load_utf8`/`load_binary` are gone; use `load`. There is no `StringMode`/`LoadOptions` anymore - this crate never transcodes or validates string content at all now (see [String encoding](#string-encoding)), so there is no policy left to select.
+- `Value`/`ValueType`/`Object`/`HashMap` are gone; use `Arena`/`ValueRef`.
+- `instance_var_prefix` is gone from the load/dump path - ivar names are always the raw `@name` symbol bytes; substitute a prefix yourself from `ValueRef::members()` if you need one (`name.strip_prefix(b"@")`).
+- The JSON envelope changed shape (`__type` is now a string tag, `__id` is gone - arena indices replace it, hash keys are `[key, value]` pairs instead of JSON-string-encoded keys, and a `Str`/`Regexp` may carry an `__encoding` field). Old dumped JSON will not deserialize with v3.
+- Dumping now round-trips **every** declared encoding byte-exact, not just UTF-8/ASCII - v2 (and early v3) always re-emitted text as UTF-8 regardless of what was originally declared.
+- `bitflags`, `encoding_rs`, `gxhash`, `indexmap`, `num-bigint`, `strum_macros`, and the hard `serde_json` dependency are all gone. Bignum <-> decimal conversion is now hand-rolled (`src/bignum.rs`) rather than pulling in arbitrary-precision arithmetic for a handful of calls per file.
+- The `.cargo/config.toml` `-C target-feature=+aes,+sse2` requirement is gone with `gxhash` - nothing about building this crate (or a crate that depends on it) requires special target features anymore.
 
-```rust compile_fail
-struct ValueFlags: u8 {
-    const None = 0;
-    const OldModule = 1;
-    const UserClass = 2;
-    const Data = 4;
-    const UserDefined = 8;
-    const UserMarshal = 16;
-}
-```
+## Benchmarks
 
-Keep in mind `__flags` also could be a combination of some flags.
+`cargo bench --bench load_dump` measures load/dump throughput in isolation. `cargo bench --bench marshal_c_compare` additionally times Ruby's own stock `Marshal` (`marshal.c`) over the same fixture via a real `ruby` interpreter (must be on `PATH`) and prints a side-by-side comparison - see `benches/marshal_c_compare.rs`/`.rb`.
 
-### Unsafe code
+## Known limitations
 
-In this crate, unsafe code provides the ability to replicate Marshal's behavior. It shouldn't ever cause problems.
-
-## Test coverage
-
-Currently, tests feature dumping/loading the following values: nil, bool, positive/negative fixnum, positive/negative bignum, float (including inf, nan and negative), utf-8/non-utf-8 strings, object links, array, hashes, structs, objects (including extended with modules, with custom marshal\_ methods, with custom \_load/\_dump methods), regexps, built-in class subclasses.
-
-Also tests include loading/dumping RPG Maker game's files and battle-testing them.
-
-If something is missing in the tests, open an issue or submit a pull request.
-
-## Example
-
-```rust no_run
-use std::fs::read;
-use marshal_rs::{load, dump, Value};
-
-// Note: Value supports indexing by `&str` if it's an object,
-// and by `&Value` if it's a hashmap, but to use that you need
-// to import `Get` trait.
-// use marshal_rs::Get;
-
-fn main() {
-    // Read marshal data from file
-    // let marshal_data: Vec<u8> = read("./Map001.rvdata2").unwrap();
-    // For this example, we'll just take pre-defined marshal data
-    let marshal_data = [0x04, 0x08, 0x30];
-
-    // Serializing to json
-    // `load` takes a `&[u8]` as argument, so `Vec<u8>` must be borrowed
-    let serialized_to_json: Value = load(&marshal_data, None).unwrap();
-
-    // Here you may stringify Value using `Value::to_string`, and
-    // `std::fs::write` it to file
-
-    // Serializing back to marshal
-    // `dump` requires owned Value as argument
-    let serialized_to_marshal: Vec<u8> = dump(serialized_to_json, None);
-
-    // Here you may `std::fs::write` serialized Marshal data to file
-}
-```
-
-## MSRV
-
-Minimum supported Rust version is 1.82.0.
+- Dumping is recursive, not iterative like loading - it only ever walks an already-validated `Arena`, never untrusted bytes directly, so a malicious _input_ can't reach it, but a very deep hand-built or already-loaded graph could still exhaust the stack. Worth revisiting if that stops being true in practice.
+- A symbol carrying its own instance variables (`TYPE_IVAR` directly wrapping `TYPE_SYMBOL` - a legacy, essentially never-emitted-by-modern-Ruby construct) is rejected with `ReadError::Unsupported` rather than silently mishandled.
 
 ## References
 
-- [marshal.c](https://github.com/ruby/ruby/blob/master/marshal.c) (Had to compile Ruby manually, and add debug prints to marshal.c, to even figure out what's going on)
-- [TypeScript implementation of Marshal](https://github.com/hyrious/marshal) (This project inspired me to start working on this)
-- [Official documentation for Marshal format](https://docs.ruby-lang.org/en/master/marshal_rdoc.html) (Mostly useless)
+- [marshal.c](https://github.com/ruby/ruby/blob/master/marshal.c) - the authoritative reference for every wire-format detail in this crate.
+- [TypeScript implementation of Marshal](https://github.com/hyrious/marshal) (the original inspiration for this project).
+- [Official documentation for Marshal format](https://docs.ruby-lang.org/en/master/marshal_rdoc.html)
 
 ## Support
 
@@ -171,4 +126,4 @@ Even if you don't, it's fine. We'll continue to do as we right now.
 
 ## License
 
-Project is licensed under WTFPL.
+Project is licensed under [WTFPL](https://www.wtfpl.net/).

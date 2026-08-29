@@ -1,23 +1,65 @@
 [package]
 name = "marshal-rs"
-version = "2.0.2"
+version = "3.0.0"
 authors = ["savannstm <savannstm@gmail.com>"]
 edition = "2021"
-rust-version = "1.85.0"
-description = "Blazingly fast Ruby-lang's Marshal implementation in Rust."
+rust-version = "1.73.0"
+description = "Blazingly fast, no_std-capable Ruby-lang Marshal implementation in Rust."
 readme = "README.md"
 repository = "https://github.com/savannstm/marshal-rs"
 documentation = "https://docs.rs/marshal-rs/"
 license-file = "LICENSE.md"
-keywords = ["marshal", "ruby", "serialize", "deserialize"]
+keywords = ["marshal", "ruby", "serialize", "deserialize", "no_std"]
+
+[workspace]
+members = ["crates/marshal-rs-capi", "crates/marshal-rs-wasm"]
+
+[features]
+default = ["std", "serde"]
+# The DOM (Arena), Loader, Dumper and Value cursor API. Pulls in `alloc`.
+alloc = []
+# std::io-backed I/O. Pulls in `alloc`.
+std = ["alloc"]
+# Streaming Serialize/Deserialize for the arena. Pulls in `alloc`.
+serde = ["alloc", "dep:serde"]
 
 [dependencies]
-bitflags = "2.13.1"
-encoding_rs = "0.8.35"
-gxhash = { version = "3.5.0", features = ["deterministic"] }
-indexmap = { version = "2.14.0", features = ["serde"] }
-num-bigint = "0.5.1"
-serde = { version = "1.0.229", features = ["serde_derive"] }
-serde_json = { version = "1.0.151", features = ["preserve_order"] }
-strum_macros = "0.28.0"
-thiserror = "2.0.20"
+serde = { version = "1.0.229", optional = true, default-features = false, features = [
+    "alloc",
+] }
+thiserror = { version = "2.0.20", default-features = false }
+
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false }
+serde_json = "1.0.151"
+serde_norway = "0.9.42"
+
+[[test]]
+name = "roundtrip"
+required-features = ["alloc"]
+
+[[test]]
+name = "serde"
+required-features = ["serde"]
+
+[[example]]
+name = "basic"
+required-features = ["alloc"]
+
+[[example]]
+name = "fixture_check"
+required-features = ["alloc"]
+
+[[example]]
+name = "yaml"
+required-features = ["serde"]
+
+[[bench]]
+name = "load_dump"
+harness = false
+required-features = ["alloc"]
+
+[[bench]]
+name = "marshal_c_compare"
+harness = false
+required-features = ["alloc"]

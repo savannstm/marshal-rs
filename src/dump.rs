@@ -1,449 +1,322 @@
-//! Utilities for serializing JSON objects back to Marshal byte streams.
+//! Writes an [`Arena`] back to a Marshal byte stream.
+//!
+//! Traversal is recursive: dumping only ever walks an already-validated
+//! [`Arena`], not untrusted bytes, so a maliciously deep *input* can't reach
+//! this path.
 
-#[allow(unused_imports)]
-use crate::load::load;
 use crate::{
-    constants::{
-        Constants, DEFAULT_SYMBOL, MARSHAL_VERSION, NUMBER_PADDING,
-        UTF8_ENCODING_SYMBOL,
-    },
-    types::{self, Object, Value, ValueType},
+    arena::{Arena, Flags, Kind, SymId, ValueId},
+    writer::Writer,
 };
-use gxhash::{HashMap, HashMapExt};
-use num_bigint::{BigInt, Sign};
-use std::{mem::take, str::FromStr};
+use alloc::vec::Vec;
 
-/// Struct for dumping [`Value`] to [`Vec<u8>`] Marshal data.
+/// Serializes `arena` back to Marshal bytes.
 ///
-/// To construct the dumper, use [`Dumper::new`].
-///
-/// To change instance var prefix, use [`Dumper::set_instance_var_prefix`].
-///
-/// To dump the data from [`Value`], use [`Dumper::dump`].
-pub struct Dumper<'a> {
-    buffer: Vec<u8>,
-    symbols: HashMap<String, usize>,
-    objects: HashMap<usize, usize>,
-    instance_var_prefix: Option<&'a str>,
+/// Infallible: every value in an [`Arena`] was constructed through
+/// [`crate::load::load`] or the [`Arena`] builder API, both of which only
+/// ever produce internally consistent nodes, and the `Vec<u8>` sink cannot
+/// fail to grow.
+#[must_use]
+pub fn dump(arena: &Arena<'_>) -> Vec<u8> {
+    let mut dumper = Dumper {
+        writer: Writer::new(Vec::with_capacity(1024)),
+        arena,
+        sym_link: alloc::vec![u32::MAX; arena.symbols.len()],
+        obj_link: alloc::vec![u32::MAX; arena.nodes.len()],
+        next_sym: 0,
+        next_obj: 0,
+        e_symbol_link: u32::MAX,
+        encoding_symbol_link: u32::MAX,
+    };
+    let _: Result<(), core::convert::Infallible> = dumper.writer.write_header();
+    dumper.write_value(arena.root());
+    dumper.writer.into_inner()
 }
 
-impl<'a> Dumper<'a> {
-    /// Constructs a new dumper with default values.
-    ///
-    /// To change instance var prefix, use [`Dumper::set_instance_var_prefix`].
-    ///
-    /// To dump the data from [`Value`], use [`Dumper::dump`].
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            buffer: Vec::with_capacity(1024),
-            symbols: HashMap::with_capacity(256),
-            objects: HashMap::with_capacity(256),
-            instance_var_prefix: None,
+struct Dumper<'r, 'a> {
+    writer: Writer<Vec<u8>>,
+    arena: &'r Arena<'a>,
+    sym_link: Vec<u32>,
+    obj_link: Vec<u32>,
+    next_sym: u32,
+    next_obj: u32,
+    e_symbol_link: u32,
+    encoding_symbol_link: u32,
+}
+
+impl Dumper<'_, '_> {
+    fn write_symbol_ref(&mut self, sym: SymId) {
+        let slot = &mut self.sym_link[sym as usize];
+        if *slot != u32::MAX {
+            let _ = self.writer.write_symbol_link(*slot);
+            return;
         }
+        let idx = self.next_sym;
+        self.next_sym += 1;
+        *slot = idx;
+        let _ = self.writer.write_symbol_new(self.arena.symbol_bytes(sym));
     }
 
-    /// Sets dumper's instance var prefix to the passed `prefix`.
-    pub fn set_instance_var_prefix(&mut self, prefix: &'a str) {
-        self.instance_var_prefix = Some(prefix);
+    /// Writes one member/ivar-name symbol without the "already written?"
+    /// dedup fast path short-circuiting into a link for the *first* use -
+    /// identical to `write_symbol_ref`, kept as a separate name at call
+    /// sites for readability (member names are always fresh-or-linked
+    /// symbols, never a general value).
+    fn write_member_name(&mut self, sym: SymId) {
+        self.write_symbol_ref(sym);
     }
 
-    fn remember_object(&mut self, value: &Value) {
-        if !self.objects.contains_key(&value.id()) {
-            self.objects.insert(value.id(), self.objects.len());
-        }
-    }
+    // One long exhaustive match over every `Kind`/wrapper-flag combination -
+    // splitting it up would just scatter one linear dispatch across several
+    // functions, not make it clearer. The `node.a`/`node.b as _` casts are
+    // bit-preserving reinterprets of a `Node`'s packed payload (a fixnum's
+    // bits, a `Str`/`Regexp`'s one-byte encoding id, a `Regexp`'s option
+    // byte) - not range-narrowing.
+    #[allow(
+        clippy::too_many_lines,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap
+    )]
+    fn write_value(&mut self, id: ValueId) {
+        let node = *self.arena.node(id);
 
-    fn write_byte<T: Into<u8>>(&mut self, byte: T) {
-        self.buffer.push(byte.into());
-    }
-
-    fn write_buffer(&mut self, buf: &[u8]) {
-        self.buffer.extend(buf);
-    }
-
-    fn write_bytes(&mut self, buf: &[u8]) {
-        self.write_int(buf.len() as i32);
-        self.write_buffer(buf);
-    }
-
-    fn write_bigint(&mut self, bigint: &str) {
-        let bigint = BigInt::from_str(bigint).unwrap();
-        let (sign, bytes) = bigint.to_bytes_le();
-        let bigint_sign = if sign == Sign::Plus {
-            Constants::SignPositive
-        } else {
-            Constants::SignNegative
-        };
-        let size_in_u16 = bytes.len().div_ceil(2) as u8 + NUMBER_PADDING;
-
-        self.write_byte(Constants::BigInt);
-        self.write_byte(bigint_sign);
-        self.write_byte(size_in_u16);
-        self.write_buffer(&bytes);
-    }
-
-    fn write_int(&mut self, number: i32) {
-        // In Ruby, 1 bit is reserved for a tag, and is not a part of the actual integer.
-        const I32_MAX: i32 = i32::MAX >> 1;
-        const I32_MIN: i32 = !(i32::MAX >> 1);
-
-        const I24_MAX: i32 = I32_MAX >> 6;
-        const I24_MIN: i32 = !(I32_MAX >> 6);
-
-        const I16_MAX: i32 = I32_MAX >> 14;
-        const I16_MIN: i32 = !(I32_MAX >> 14);
-
-        const I8_MAX: i32 = I32_MAX >> 22;
-        const I8_MIN: i32 = !(I32_MAX >> 22);
-
-        let mut buf: Vec<u8> = Vec::with_capacity(5);
-
-        match number {
-            0 => buf.push(0),
-            1..=122 => buf.push(number as u8 + NUMBER_PADDING),
-            -123..=-1 => buf.push(number as u8 - NUMBER_PADDING),
-            I8_MIN..=I8_MAX => {
-                buf.push(if number < 0 { 255 } else { 1 });
-                buf.push(number as u8);
+        match node.kind {
+            Kind::Nil => {
+                let _ = self.writer.write_nil();
+                return;
             }
-            I16_MIN..=I16_MAX => {
-                buf.push(if number < 0 { 254 } else { 2 });
-                buf.extend(&number.to_le_bytes()[0..2]);
+            Kind::True => {
+                let _ = self.writer.write_bool(true);
+                return;
             }
-            I24_MIN..=I24_MAX => {
-                buf.push(if number < 0 { 253 } else { 3 });
-                buf.extend(&number.to_le_bytes()[0..3]);
+            Kind::False => {
+                let _ = self.writer.write_bool(false);
+                return;
             }
-            I32_MIN..=I32_MAX => {
-                buf.push(if number < 0 { 252 } else { 4 });
-                buf.extend(&number.to_le_bytes()[0..4]);
+            Kind::Fixnum => {
+                let _ = self.writer.write_fixnum(node.a as i32);
+                return;
+            }
+            Kind::Symbol => {
+                self.write_symbol_ref(node.a);
+                return;
             }
             _ => {}
         }
 
-        self.write_buffer(&buf);
-    }
-
-    fn write_str(&mut self, string: &str) {
-        self.write_bytes(string.as_bytes());
-    }
-
-    fn write_symbol(&mut self, symbol: &str) {
-        if let Some(&pos) = self.symbols.get(symbol) {
-            self.write_byte(Constants::SymbolLink);
-            self.write_int(pos as i32);
-        } else {
-            self.write_byte(Constants::Symbol);
-            self.write_str(symbol);
-            self.symbols.insert(symbol.to_owned(), self.symbols.len());
+        let slot = &mut self.obj_link[id as usize];
+        if *slot != u32::MAX {
+            let _ = self.writer.write_object_link(*slot);
+            return;
         }
-    }
+        let idx = self.next_obj;
+        self.next_obj += 1;
+        *slot = idx;
 
-    fn write_class_name(
-        &mut self,
-        data_type: Constants,
-        class: &str,
-        str: bool,
-    ) {
-        self.write_byte(data_type);
-
-        if str {
-            self.write_str(class);
-        } else {
-            self.write_symbol(class);
+        // `TYPE_IVAR` is the OUTERMOST wrapper when present - it wraps the
+        // entire extended/uclass/data/... construct, not just the bare
+        // string - and its ivar pairs trail after everything else, so both
+        // the tag and the trailing pair are handled here rather than inside
+        // the `Kind::Str`/`Kind::Regexp` arms below. A declared encoding of
+        // `ASCII-8BIT` needs no ivar at all - matching Ruby, which only
+        // ever writes `E`/`encoding` for a *non-default* encoding - so a
+        // `Kind::Str` node built with that id (only reachable through the
+        // builder API; the loader never produces it, since Ruby never
+        // writes the ivar for it) dumps identically to plain `Bytes`.
+        let encoding_id = match node.kind {
+            Kind::Str => Some(node.b as u8),
+            Kind::Regexp => Some((node.b >> 8) as u8),
+            _ => None,
         }
-    }
-
-    fn write_instance_var(&mut self, mut object: Object) {
-        let object_length: usize = object.len();
-        self.write_int(object_length as i32);
-
-        for (key, value) in object.iter_mut() {
-            let mut key: String = key.to_owned();
-
-            if let Some(prefix) = self.instance_var_prefix {
-                key.replace_range(0..prefix.len(), "@");
-            }
-
-            self.write_symbol(key.as_str());
-            self.write_structure(value.take());
-        }
-    }
-
-    fn write_extensions(&mut self, value: &Value) {
-        for symbol in value.extensions() {
-            self.write_byte(Constants::ExtendedObject);
-            self.write_symbol(symbol);
-        }
-    }
-
-    fn write_regexp(&mut self, regexp_str: &str) {
-        let first_slash_pos = regexp_str.find('/').unwrap();
-        let last_slash_pos = regexp_str.rfind('/').unwrap();
-
-        let expression_str = &regexp_str[first_slash_pos + 1..last_slash_pos];
-        let flags_str = &regexp_str[last_slash_pos + 1..];
-
-        let mut flags: u8 = 0;
-
-        if flags_str.contains('i') {
-            flags |= Constants::RegexpIgnore as u8;
+        .filter(|&id| id != crate::encoding::ENCODING_ASCII_8BIT);
+        let needs_ivar_wrap = encoding_id.is_some();
+        if needs_ivar_wrap {
+            let _ = self.writer.write_ivar_wrap_tag();
         }
 
-        if flags_str.contains('x') {
-            flags |= Constants::RegexpExtended as u8;
+        for module in self.arena.extensions_of(id) {
+            let _ = self.writer.write_extended_tag();
+            self.write_symbol_ref(module);
         }
 
-        if flags_str.contains('m') {
-            flags |= Constants::RegexpMultiline as u8;
-        }
-
-        self.write_byte(Constants::Regexp);
-        self.write_str(expression_str);
-        self.write_byte(flags);
-    }
-
-    fn write_array(&mut self, array: Vec<Value>) {
-        self.write_byte(Constants::Array);
-        self.write_int(array.len() as i32);
-
-        for element in array {
-            self.write_structure(element);
-        }
-    }
-
-    fn write_string(&mut self, str: &str) {
-        self.write_byte(Constants::InstanceVar);
-        self.write_byte(Constants::String);
-        self.write_str(str);
-        self.write_int(1);
-        self.write_symbol(UTF8_ENCODING_SYMBOL);
-        self.write_byte(Constants::True);
-    }
-
-    fn write_hashmap(&mut self, mut hashmap: types::HashMap, is_struct: bool) {
-        let mut object_len = hashmap.len();
-
-        let default_symbol = Value::symbol(DEFAULT_SYMBOL);
-        let default_value = hashmap.get_mut(&default_symbol).map(Value::take);
-
-        let hashmap_type = if default_value.is_some() {
-            object_len -= 1;
-            Constants::HashMapDefault
-        } else {
-            Constants::HashMap
-        };
-
-        if !is_struct {
-            self.write_byte(hashmap_type);
-        }
-
-        self.write_int(object_len as i32);
-
-        for (key, value) in hashmap.0.into_iter().take(object_len) {
-            self.write_structure(key);
-            self.write_structure(value);
-        }
-
-        if let Some(default_value) = default_value {
-            self.write_structure(default_value);
-        }
-    }
-
-    fn write_structure(&mut self, mut value: Value) {
-        let mut class_written: bool = false;
-
-        if value.is_data() {
-            self.write_class_name(Constants::Data, value.class_name(), false);
+        let mut class_written = false;
+        if node.flags.contains(Flags::DATA) {
+            let _ = self.writer.write_tag(crate::wire::Tag::Data);
+            self.write_symbol_ref(node.class);
             class_written = true;
-        } else if value.is_user_class() {
-            self.write_byte(Constants::UserClass);
-            self.write_symbol(value.class_name());
+        } else if node.flags.contains(Flags::USER_CLASS) {
+            let _ = self.writer.write_uclass_tag();
+            self.write_symbol_ref(node.class);
             class_written = true;
-        } else if value.is_user_defined() {
-            let has_instance_var: bool = {
-                if let Some(obj) = value.as_object() {
-                    !obj.is_empty()
-                } else {
-                    false
-                }
-            };
-
-            if has_instance_var {
-                self.write_byte(Constants::InstanceVar);
-            }
-
-            self.write_class_name(
-                Constants::UserDefined,
-                value.class_name(),
-                false,
-            );
-            self.write_bytes(value.as_byte_vec().unwrap());
-
-            if has_instance_var {
-                self.write_instance_var(value.into_object().unwrap());
+        } else if node.flags.contains(Flags::USER_DEFINED) {
+            self.write_class_name_tag(crate::wire::Tag::UserDef, node.class);
+            let _ = self.writer.write_chunk(self.arena.blob(node.a));
+            if let Some(encoding_id) = encoding_id {
+                self.write_trailing_encoding_ivar(encoding_id, id);
             }
             return;
-        } else if value.is_user_marshal() {
-            self.write_class_name(
-                Constants::UserMarshal,
-                value.class_name(),
-                false,
-            );
-
+        } else if node.flags.contains(Flags::USER_MARSHAL) {
+            self.write_class_name_tag(crate::wire::Tag::UserMarshal, node.class);
             class_written = true;
         }
 
-        match *value {
-            ValueType::Null => self.write_byte(Constants::Null),
-            ValueType::Bool(bool) => {
-                let bool_type = if bool {
-                    Constants::True
+        match node.kind {
+            Kind::Nil | Kind::True | Kind::False | Kind::Fixnum | Kind::Symbol => unreachable!(),
+
+            Kind::Bignum => {
+                let magnitude = self.arena.blob(node.a);
+                let _ = self
+                    .writer
+                    .write_bignum(node.flags.contains(Flags::NEGATIVE), magnitude);
+            }
+
+            Kind::Float => {
+                let _ = self.writer.write_float(self.arena.blob(node.a));
+            }
+
+            // `Str`'s bytes are exactly what was declared, untouched (see
+            // `Kind::Str`'s doc comment); the wire shape is identical to
+            // `Bytes` (a bare `"` + chunk) - only the outer ivar-wrap above
+            // (and the trailing pair below) differ.
+            Kind::Bytes | Kind::Str => {
+                let _ = self.writer.write_string_bytes(self.arena.blob(node.a));
+            }
+
+            Kind::Regexp => {
+                let _ = self.writer.write_regexp(self.arena.blob(node.a), node.b as u8);
+            }
+
+            Kind::Array => {
+                let _ = self.writer.write_array_header(node.b);
+                for i in 0..node.b {
+                    let child = self.arena.children[(node.a + i) as usize];
+                    self.write_value(child);
+                }
+            }
+
+            Kind::Hash => {
+                let _ = self
+                    .writer
+                    .write_hash_header(node.b, node.flags.contains(Flags::HAS_DEFAULT));
+                for i in 0..node.b {
+                    let key = self.arena.children[(node.a + i * 2) as usize];
+                    let value = self.arena.children[(node.a + i * 2 + 1) as usize];
+                    self.write_value(key);
+                    self.write_value(value);
+                }
+                if node.flags.contains(Flags::HAS_DEFAULT) {
+                    let default = self.arena.children[(node.a + node.b * 2) as usize];
+                    self.write_value(default);
+                }
+            }
+
+            Kind::Struct => {
+                if !class_written {
+                    let _ = self.writer.write_tag(crate::wire::Tag::Struct);
+                    self.write_symbol_ref(node.class);
+                }
+                let _ = self.writer.write_len(node.b);
+                for i in 0..node.b {
+                    let (name, value) = self.arena.members[(node.a + i) as usize];
+                    self.write_member_name(name);
+                    self.write_value(value);
+                }
+            }
+
+            Kind::Object => {
+                if !class_written {
+                    let _ = self.writer.write_tag(crate::wire::Tag::Object);
+                    self.write_symbol_ref(node.class);
+                }
+                let _ = self.writer.write_len(node.b);
+                for i in 0..node.b {
+                    let (name, value) = self.arena.members[(node.a + i) as usize];
+                    self.write_member_name(name);
+                    self.write_value(value);
+                }
+            }
+
+            Kind::Class => {
+                if !class_written {
+                    let _ = self.writer.write_class_name(self.arena.blob(node.a));
+                }
+            }
+
+            Kind::Module => {
+                if !class_written {
+                    let old = node.flags.contains(Flags::OLD_MODULE);
+                    let _ = self.writer.write_module_name(self.arena.blob(node.a), old);
+                }
+            }
+        }
+
+        if let Some(encoding_id) = encoding_id {
+            self.write_trailing_encoding_ivar(encoding_id, id);
+        }
+    }
+
+    fn write_class_name_tag(&mut self, tag: crate::wire::Tag, class: SymId) {
+        let _ = self.writer.write_tag(tag);
+        self.write_symbol_ref(class);
+    }
+
+    /// Writes the single trailing ivar pair that follows an outer
+    /// `TYPE_IVAR` wrap for a `Kind::Str`/encoding-tagged `Kind::Regexp`
+    /// value - `:E => true`/`:E => false` for UTF-8/US-ASCII (Ruby's own
+    /// shorthand for the two most common encodings), `:encoding => "<name>"`
+    /// for everything else. `target` is the wrapped value's own id, needed
+    /// to look up a [`crate::encoding::ENCODING_CUSTOM`] name.
+    fn write_trailing_encoding_ivar(&mut self, encoding_id: u8, target: ValueId) {
+        let _ = self.writer.write_len(1);
+        match encoding_id {
+            crate::encoding::ENCODING_UTF_8 => {
+                self.write_symbol_of_e();
+                let _ = self.writer.write_bool(true);
+            }
+            crate::encoding::ENCODING_US_ASCII => {
+                self.write_symbol_of_e();
+                let _ = self.writer.write_bool(false);
+            }
+            id => {
+                self.write_symbol_of_encoding();
+                let name = if id == crate::encoding::ENCODING_CUSTOM {
+                    self.arena.custom_encoding_of(target).unwrap_or(b"")
                 } else {
-                    Constants::False
+                    crate::encoding::encoding_name(id).unwrap_or(b"")
                 };
-
-                self.write_byte(bool_type);
-            }
-            ValueType::Integer(int) => {
-                self.write_byte(Constants::Int);
-                self.write_int(int);
-            }
-            _ => {
-                if let Some(&object_pos) = self.objects.get(&value.id()) {
-                    self.write_byte(Constants::ObjectLink);
-                    self.write_int(object_pos as i32);
-                    return;
-                }
-
-                self.remember_object(&value);
-                self.write_extensions(&value);
-
-                let class = unsafe { &mut *(&raw mut value) }.class_name();
-
-                match *value {
-                    ValueType::Null
-                    | ValueType::Bool(_)
-                    | ValueType::Integer(_) => unreachable!(),
-                    ValueType::Float(ref str) => {
-                        self.write_byte(Constants::Float);
-                        self.write_str(str);
-                    }
-                    ValueType::Bigint(ref str) => self.write_bigint(str),
-                    ValueType::Symbol(ref str) => self.write_symbol(str),
-                    ValueType::String(ref str) => self.write_string(str),
-                    ValueType::Regexp(ref str) => self.write_regexp(str),
-                    ValueType::Bytes(ref bytes) => {
-                        self.write_byte(Constants::String);
-                        self.write_bytes(bytes);
-                    }
-                    ValueType::Array(ref mut array) => {
-                        self.write_array(take(array));
-                    }
-                    ValueType::Object(ref mut object) => {
-                        if !class_written {
-                            self.write_class_name(
-                                Constants::Object,
-                                class,
-                                false,
-                            );
-                        }
-
-                        self.write_instance_var(take(object));
-                    }
-                    ValueType::Class => {
-                        if !class_written {
-                            self.write_class_name(
-                                Constants::Class,
-                                class,
-                                true,
-                            );
-                        }
-                    }
-                    ValueType::Module => {
-                        self.write_class_name(
-                            if value.is_old_module() {
-                                Constants::ModuleOld
-                            } else {
-                                Constants::Module
-                            },
-                            class,
-                            true,
-                        );
-                    }
-                    ValueType::HashMap(ref mut map) => {
-                        self.write_hashmap(take(map), false);
-                    }
-                    ValueType::Struct(ref mut hashmap) => {
-                        if !class_written {
-                            self.write_class_name(
-                                Constants::Struct,
-                                class,
-                                false,
-                            );
-                        }
-
-                        self.write_hashmap(take(hashmap), true);
-                    }
-                }
+                let _ = self.writer.write_string_bytes(name);
             }
         }
     }
 
-    /// Serializes JSON object to a Marshal byte stream.
-    ///
-    /// `instance_var_prefix` argument takes a string, and replaces instance variables' prefixes with Ruby's "@" prefix. It's value must be the same, as in [`load`] function.
-    ///
-    /// # Example
-    /// ```rust
-    /// use marshal_rs::{Dumper, Value};
-    ///
-    /// let mut dumper = Dumper::new();
-    /// let json = Value::null();
-    ///
-    /// // Serialize Value to Marshal bytes
-    /// let bytes: Vec<u8> = dumper.dump(json);
-    /// assert_eq!(&bytes, &[0x04, 0x08, 0x30]);
-    /// ```
-    pub fn dump(&mut self, value: Value) -> Vec<u8> {
-        self.write_buffer(MARSHAL_VERSION);
-        self.write_structure(value);
-
-        self.objects.clear();
-        self.symbols.clear();
-
-        take(&mut self.buffer)
-    }
-}
-
-impl Default for Dumper<'_> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Serializes [`Value`] to a Marshal byte stream.
-///
-/// `instance_var_prefix` argument takes a string, and replaces instance variables' prefixes with Ruby's "@" prefix. It's value must be the same, as in [`load`] function.
-///
-/// # Example
-/// ```rust
-/// use marshal_rs::{dump, Value};
-///
-/// let json = Value::null();
-///
-/// // Serialize Value to Marshal bytes
-/// let bytes: Vec<u8> = dump(json, None);
-/// assert_eq!(&bytes, &[0x04, 0x08, 0x30]);
-/// ```
-#[must_use]
-pub fn dump(value: Value, instance_var_prefix: Option<&str>) -> Vec<u8> {
-    let mut dumper = Dumper::new();
-
-    if let Some(prefix) = instance_var_prefix {
-        dumper.set_instance_var_prefix(prefix);
+    /// Writes a fixed ASCII symbol (`"E"`) that isn't backed by a `SymId` in
+    /// the arena - it's synthesized here, not read from the source stream -
+    /// so it always goes through the fresh-symbol path (and joins the
+    /// regular dedup table for the rest of this dump).
+    fn write_symbol_of_e(&mut self) {
+        // Not a real `SymId` lookup: this literal is short-lived enough
+        // that deduping it against the arena's own table isn't worth a
+        // dynamic intern call mid-dump. The first dumped `:E` writes it
+        // fresh and links to that occurrence afterward via a tiny local
+        // cache.
+        if self.e_symbol_link == u32::MAX {
+            self.e_symbol_link = self.next_sym;
+            self.next_sym += 1;
+            let _ = self.writer.write_symbol_new(b"E");
+        } else {
+            let _ = self.writer.write_symbol_link(self.e_symbol_link);
+        }
     }
 
-    dumper.dump(value)
+    /// Same idea as [`Dumper::write_symbol_of_e`], for the `"encoding"`
+    /// symbol.
+    fn write_symbol_of_encoding(&mut self) {
+        if self.encoding_symbol_link == u32::MAX {
+            self.encoding_symbol_link = self.next_sym;
+            self.next_sym += 1;
+            let _ = self.writer.write_symbol_new(b"encoding");
+        } else {
+            let _ = self.writer.write_symbol_link(self.encoding_symbol_link);
+        }
+    }
 }
