@@ -5,6 +5,29 @@
 //! `Arena::links`, so cycles are representable without `Rc`/`RefCell`.
 //! String/float/bignum payloads are `Cow<'a, [u8]>` slices borrowed directly
 //! out of the input buffer wherever possible.
+//!
+//! # In-place mutation of an already-loaded arena
+//!
+//! Two different function groups:
+//!
+//! - Slot setters (`set_array_*`/`set_hash_*`/`set_member_*`) repoint one
+//!   container slot at a freshly-pushed `ValueId`, leaving the old value
+//!   itself untouched (now unreferenced from there, but harmless garbage
+//!   - the arena never reclaims).
+//!
+//! - Content setters (`set_*_content`/`set_string_text`/`set_fixnum_value`
+//!   below) overwrite a node's own payload while keeping its `ValueId`.
+//!   That distinction matters for a value that's shared - reachable from
+//!   more than one container via Marshal's `@n` back-reference, which
+//!   `dump` tracks by `ValueId` (see `Dumper::obj_link` in `dump.rs`).
+//!   A slot setter only updates the one container you called it on; a
+//!   content setter updates every reference at once, exactly like Ruby
+//!   mutating the object in place would. There's no `Symbol` content
+//!   setter for the same reason in reverse: a `Symbol`'s payload is a
+//!   `SymId` into the *interned* table, shared by every identical symbol
+//!   in the file (every `:foo`, plus any ivar/class name spelled `foo`) -
+//!   mutating that row's bytes would silently rewrite all of them, not
+//!   just the node you meant to touch.
 
 use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, vec::Vec};
 
@@ -95,6 +118,12 @@ impl Flags {
     #[must_use]
     pub const fn with(self, other: Self) -> Self {
         Self(self.0 | other.0)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
     }
 }
 
@@ -329,23 +358,23 @@ impl Node {
     }
 }
 
-/// Programmatic construction - building an [`Arena`] from scratch (e.g. from
-/// the `serde` `Deserialize` impl, or by hand before [`crate::dump::dump`]).
-///
-/// Everything here takes owned data: a builder has no input buffer to borrow
-/// from, so payloads are always `Cow::Owned`.
-// `value as u32` (`push_fixnum`) is a bit-preserving reinterpret, not a
-// range-narrowing cast - `Node::a` stores a fixnum's bits verbatim and
-// `ValueRef::as_i64` casts back with `as i32` to recover them. The
-// `.len() as u32` calls are the same "`ValueId` is `u32`" reasoning as the
-// main `Arena` impl above.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 impl Arena<'static> {
+    /// Starts a wholly fresh, empty arena to build up by hand (e.g. before
+    /// [`crate::dump::dump`]) - no input buffer, so nothing to borrow from.
     #[must_use]
     pub const fn builder() -> Self {
         Self::new()
     }
+}
 
+/// Programmatic construction/mutation - building new values from scratch, or
+/// pushing them into an already-`load`ed `Arena<'a>` to replace an existing
+/// slot in place (see `set_array_*`/`set_member_*` below). Every payload
+/// here is owned data, wrapped `Cow::Owned` - which is valid at any `'a`, not
+/// just `'static` - so this whole block applies equally to a fresh builder
+/// and a loaded arena.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+impl Arena<'_> {
     pub fn push_nil(&mut self) -> ValueId {
         self.push_node(Node::scalar(Kind::Nil))
     }
@@ -537,5 +566,217 @@ impl Arena<'static> {
 
     pub fn set_root(&mut self, id: ValueId) {
         self.root = id;
+    }
+
+    /// Sets `id`'s declared class/module name, overwriting whatever was
+    /// there before. Needed for values `push_bytes`/`push_array`/etc. alone
+    /// can't tag - e.g. a `TYPE_USERDEF` node (`Table#_dump` in RPG Maker
+    /// map data): `push_bytes` for the payload, then this plus
+    /// [`Arena::add_flags`] with [`Flags::USER_DEFINED`] to restore its
+    /// class.
+    pub fn set_class(&mut self, id: ValueId, class: Vec<u8>) {
+        let sym = self.intern_symbol(Cow::Owned(class));
+        self.nodes[id as usize].class = sym;
+    }
+
+    /// Clears `id`'s declared class/module name back to [`NO_SYM`] - the
+    /// counterpart to [`Arena::set_class`], for a value that no longer needs
+    /// one (e.g. undoing a `TYPE_UCLASS`/[`Flags::USER_CLASS`] tag).
+    pub fn clear_class(&mut self, id: ValueId) {
+        self.nodes[id as usize].class = NO_SYM;
+    }
+
+    /// Ors `flags` into `id`'s existing flags.
+    pub fn add_flags(&mut self, id: ValueId, flags: Flags) {
+        let node = &mut self.nodes[id as usize];
+        node.flags = node.flags.with(flags);
+    }
+
+    /// Clears `flags` out of `id`'s existing flags, leaving any others
+    /// untouched - the counterpart to [`Arena::add_flags`].
+    pub fn remove_flags(&mut self, id: ValueId, flags: Flags) {
+        let node = &mut self.nodes[id as usize];
+        node.flags = node.flags.without(flags);
+    }
+
+    /// Overwrites `id`'s flags entirely, discarding whatever was set before.
+    pub fn set_flags(&mut self, id: ValueId, flags: Flags) {
+        self.nodes[id as usize].flags = flags;
+    }
+
+    /// Records that `id` was `Module#extend`ed with `module` (`TYPE_EXTENDED`).
+    pub fn push_extension(&mut self, id: ValueId, module: Vec<u8>) {
+        let sym = self.intern_symbol(Cow::Owned(module));
+        self.extensions.push((id, sym));
+    }
+
+    /// Overwrites `id`'s array element `index` to point at `new_value`,
+    /// returning the id it replaced. Panics (via the underlying index) if
+    /// `id` isn't an `Array` or `index` is out of bounds.
+    pub fn set_array_value(&mut self, id: ValueId, index: usize, new_value: ValueId) -> ValueId {
+        let node = *self.node(id);
+        core::mem::replace(&mut self.children[node.a as usize + index], new_value)
+    }
+
+    /// Pushes `text` as a fresh UTF-8 string and overwrites array element
+    /// `index` of `id` to reference it. See [`Arena::set_array_value`].
+    pub fn set_array_string(&mut self, id: ValueId, index: usize, text: alloc::string::String) -> ValueId {
+        let new_value = self.push_string(text);
+        self.set_array_value(id, index, new_value)
+    }
+
+    /// Pushes `bytes` as fresh untagged bytes and overwrites array element
+    /// `index` of `id` to reference it. See [`Arena::set_array_value`].
+    pub fn set_array_bytes(&mut self, id: ValueId, index: usize, bytes: Vec<u8>) -> ValueId {
+        let new_value = self.push_bytes(bytes);
+        self.set_array_value(id, index, new_value)
+    }
+
+    /// Pushes `bytes` as a fresh symbol and overwrites array element `index`
+    /// of `id` to reference it. See [`Arena::set_array_value`].
+    pub fn set_array_symbol(&mut self, id: ValueId, index: usize, bytes: Vec<u8>) -> ValueId {
+        let new_value = self.push_symbol(bytes);
+        self.set_array_value(id, index, new_value)
+    }
+
+    /// Pushes `value` as a fresh fixnum and overwrites array element `index`
+    /// of `id` to reference it. See [`Arena::set_array_value`].
+    pub fn set_array_fixnum(&mut self, id: ValueId, index: usize, value: i32) -> ValueId {
+        let new_value = self.push_fixnum(value);
+        self.set_array_value(id, index, new_value)
+    }
+
+    /// Pushes `value` as a fresh bool and overwrites array element `index`
+    /// of `id` to reference it. See [`Arena::set_array_value`].
+    pub fn set_array_bool(&mut self, id: ValueId, index: usize, value: bool) -> ValueId {
+        let new_value = self.push_bool(value);
+        self.set_array_value(id, index, new_value)
+    }
+
+    /// Overwrites `id`'s hash entry `index`'s key to `new_key`, returning
+    /// the id it replaced. Panics (via the underlying index) if `id` isn't a
+    /// `Hash` or `index` is out of bounds.
+    pub fn set_hash_key(&mut self, id: ValueId, index: usize, new_key: ValueId) -> ValueId {
+        let node = *self.node(id);
+        core::mem::replace(&mut self.children[node.a as usize + index * 2], new_key)
+    }
+
+    /// Overwrites `id`'s hash entry `index`'s value to `new_value`,
+    /// returning the id it replaced. Panics (via the underlying index) if
+    /// `id` isn't a `Hash` or `index` is out of bounds.
+    pub fn set_hash_value(&mut self, id: ValueId, index: usize, new_value: ValueId) -> ValueId {
+        let node = *self.node(id);
+        core::mem::replace(&mut self.children[node.a as usize + index * 2 + 1], new_value)
+    }
+
+    /// Overwrites `id`'s trailing hash-default entry, returning the id it
+    /// replaced - `None` if `id` isn't a `Hash` or has no default
+    /// ([`Flags::HAS_DEFAULT`] unset). This never adds a default where there
+    /// wasn't one, matching [`Arena::set_member_value`]'s "never adds a new
+    /// member" rule.
+    pub fn set_hash_default(&mut self, id: ValueId, new_default: ValueId) -> Option<ValueId> {
+        let node = *self.node(id);
+        if !node.flags.contains(Flags::HAS_DEFAULT) {
+            return None;
+        }
+        let idx = node.a as usize + node.b as usize * 2;
+        Some(core::mem::replace(&mut self.children[idx], new_default))
+    }
+
+    /// The index into `self.members` of `id`'s `Object`/`Struct` member
+    /// named `name`, or `None` if `id` isn't one of those kinds or has no
+    /// such member. `name` matches with or without a leading `@`, mirroring
+    /// [`crate::value::ValueRef::get`].
+    fn member_index(&self, id: ValueId, name: &[u8]) -> Option<usize> {
+        let node = *self.node(id);
+        if !matches!(node.kind, Kind::Object | Kind::Struct) {
+            return None;
+        }
+        (0..node.b).map(|i| (node.a + i) as usize).find(|&idx| {
+            let sym = self.symbol_bytes(self.members[idx].0);
+            sym.strip_prefix(b"@").unwrap_or(sym) == name
+        })
+    }
+
+    /// Overwrites `id`'s `name` member to point at `new_value`, returning
+    /// the id it replaced - `None` if `id` isn't an `Object`/`Struct` or has
+    /// no member named `name` (this never adds a new member).
+    pub fn set_member_value(&mut self, id: ValueId, name: &[u8], new_value: ValueId) -> Option<ValueId> {
+        let idx = self.member_index(id, name)?;
+        Some(core::mem::replace(&mut self.members[idx].1, new_value))
+    }
+
+    /// Pushes `text` as a fresh UTF-8 string and overwrites `id`'s `name`
+    /// member to reference it. See [`Arena::set_member_value`].
+    pub fn set_member_string(&mut self, id: ValueId, name: &[u8], text: alloc::string::String) -> Option<ValueId> {
+        let new_value = self.push_string(text);
+        self.set_member_value(id, name, new_value)
+    }
+
+    /// Pushes `bytes` as fresh untagged bytes and overwrites `id`'s `name`
+    /// member to reference it. See [`Arena::set_member_value`].
+    pub fn set_member_bytes(&mut self, id: ValueId, name: &[u8], bytes: Vec<u8>) -> Option<ValueId> {
+        let new_value = self.push_bytes(bytes);
+        self.set_member_value(id, name, new_value)
+    }
+
+    /// Pushes `bytes` as a fresh symbol and overwrites `id`'s `name` member
+    /// to reference it. See [`Arena::set_member_value`].
+    pub fn set_member_symbol(&mut self, id: ValueId, name: &[u8], bytes: Vec<u8>) -> Option<ValueId> {
+        let new_value = self.push_symbol(bytes);
+        self.set_member_value(id, name, new_value)
+    }
+
+    /// Pushes `value` as a fresh fixnum and overwrites `id`'s `name` member
+    /// to reference it. See [`Arena::set_member_value`].
+    pub fn set_member_fixnum(&mut self, id: ValueId, name: &[u8], value: i32) -> Option<ValueId> {
+        let new_value = self.push_fixnum(value);
+        self.set_member_value(id, name, new_value)
+    }
+
+    /// Pushes `value` as a fresh bool and overwrites `id`'s `name` member to
+    /// reference it. See [`Arena::set_member_value`].
+    pub fn set_member_bool(&mut self, id: ValueId, name: &[u8], value: bool) -> Option<ValueId> {
+        let new_value = self.push_bool(value);
+        self.set_member_value(id, name, new_value)
+    }
+
+    /// Overwrites `id`'s own byte payload in place, returning the blob index
+    /// it replaced. `id` keeps its identity, so every existing reference to
+    /// it - not just the container you might otherwise have edited via
+    /// [`Arena::set_array_bytes`]/[`Arena::set_member_bytes`] - sees the new
+    /// content. `id` must be `Kind::Bytes`.
+    pub fn set_bytes_content(&mut self, id: ValueId, bytes: Vec<u8>) -> u32 {
+        debug_assert!(
+            self.node(id).kind == Kind::Bytes,
+            "set_bytes_content on a non-Bytes node"
+        );
+        let idx = self.push_blob(Cow::Owned(bytes));
+        core::mem::replace(&mut self.nodes[id as usize].a, idx)
+    }
+
+    /// Overwrites `id`'s own text payload in place, returning the blob index
+    /// it replaced. Keeps `id`'s existing encoding tag ([`Kind::Str`]'s
+    /// `Node::b`) untouched - `text` must already be valid in that encoding
+    /// (trivially true for the common case, since [`Arena::push_string`]
+    /// tags UTF-8 and `text` is a Rust `String`). See
+    /// [`Arena::set_bytes_content`] for why this preserves references that a
+    /// slot setter like [`Arena::set_array_string`] wouldn't. `id` must be
+    /// `Kind::Str`.
+    pub fn set_string_text(&mut self, id: ValueId, text: alloc::string::String) -> u32 {
+        debug_assert!(self.node(id).kind == Kind::Str, "set_string_text on a non-Str node");
+        let idx = self.push_blob(Cow::Owned(text.into_bytes()));
+        core::mem::replace(&mut self.nodes[id as usize].a, idx)
+    }
+
+    /// Overwrites `id`'s own fixnum value in place, returning the value it
+    /// replaced. See [`Arena::set_bytes_content`] for why this preserves
+    /// references that a slot setter wouldn't. `id` must be `Kind::Fixnum`.
+    pub fn set_fixnum_value(&mut self, id: ValueId, value: i32) -> i32 {
+        debug_assert!(
+            self.node(id).kind == Kind::Fixnum,
+            "set_fixnum_value on a non-Fixnum node"
+        );
+        core::mem::replace(&mut self.nodes[id as usize].a, value as u32) as i32
     }
 }
