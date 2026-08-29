@@ -1,6 +1,6 @@
 [package]
 name = "marshal-rs-wasm"
-version = "0.1.0"
+version = "3.0.0"
 edition = "2021"
 rust-version = "1.73.0"
 description = "WASM bindings for marshal-rs: a Ruby-lang Marshal implementation."
