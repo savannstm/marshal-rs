@@ -24,8 +24,6 @@ cargo add marshal-rs
 | `std`    | `alloc`  | `std::io`-backed I/O.                                                                                                                                                                                                                                        |
 | `serde`  | `alloc`  | Streaming `Serialize`/`Deserialize` for `Arena` (JSON or any other serde format - see below).                                                                                                                                                                |
 
-A C-callable surface over the `Arena` API is a separate workspace crate, `marshal-rs-capi`, not a feature of this one - see [`no_std` / FFI](#no_std--ffi) below.
-
 `std` and `serde` are enabled by default. Disable them for a leaner build:
 
 ```toml
