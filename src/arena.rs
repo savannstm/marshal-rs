@@ -779,4 +779,85 @@ impl Arena<'_> {
         );
         core::mem::replace(&mut self.nodes[id as usize].a, value as u32) as i32
     }
+
+    /// Takes ownership of the blob at `idx`, leaving an empty blob behind.
+    fn take_blob(&mut self, idx: u32) -> Vec<u8> {
+        core::mem::replace(&mut self.blobs[idx as usize], Cow::Borrowed(&[])).into_owned()
+    }
+
+    /// Takes ownership of `id`'s own byte payload, leaving an empty blob in
+    /// its place. `id` keeps its identity - like every setter above, this
+    /// only touches this one blob slot, and [`Arena::push_blob`] never
+    /// shares one slot between two nodes, so nothing else can be pointing at
+    /// the content being taken. `id` must be `Kind::Str` or `Kind::Bytes`.
+    ///
+    /// On an [`Arena<'static>`] (i.e. after [`Arena::into_owned`], which
+    /// every loaded arena has already been through by the time a caller can
+    /// reach a `ValueId`) every blob is already [`Cow::Owned`], so this is a
+    /// plain move - no allocation, unlike reading the content via
+    /// [`Arena::blob`] and cloning it.
+    pub fn take_bytes_content(&mut self, id: ValueId) -> Vec<u8> {
+        debug_assert!(
+            matches!(self.node(id).kind, Kind::Str | Kind::Bytes),
+            "take_bytes_content on a non-Str/Bytes node"
+        );
+        let idx = self.node(id).a;
+        self.take_blob(idx)
+    }
+
+    /// Takes ownership of `id`'s bignum magnitude (little-endian, sign in
+    /// [`Flags::NEGATIVE`]), leaving an empty blob in its place. See
+    /// [`Arena::take_bytes_content`]. `id` must be `Kind::Bignum`.
+    pub fn take_bignum_magnitude(&mut self, id: ValueId) -> Vec<u8> {
+        debug_assert!(
+            self.node(id).kind == Kind::Bignum,
+            "take_bignum_magnitude on a non-Bignum node"
+        );
+        let idx = self.node(id).a;
+        self.take_blob(idx)
+    }
+
+    /// Takes ownership of `id`'s textual float form (e.g. `b"1.5"`), leaving
+    /// an empty blob in its place. See [`Arena::take_bytes_content`]. `id`
+    /// must be `Kind::Float`.
+    pub fn take_float_ascii(&mut self, id: ValueId) -> Vec<u8> {
+        debug_assert!(
+            self.node(id).kind == Kind::Float,
+            "take_float_ascii on a non-Float node"
+        );
+        let idx = self.node(id).a;
+        self.take_blob(idx)
+    }
+
+    /// Takes ownership of `id`'s regexp source, leaving an empty blob in its
+    /// place. See [`Arena::take_bytes_content`]. `id` must be
+    /// `Kind::Regexp`.
+    pub fn take_regexp_source(&mut self, id: ValueId) -> Vec<u8> {
+        debug_assert!(
+            self.node(id).kind == Kind::Regexp,
+            "take_regexp_source on a non-Regexp node"
+        );
+        let idx = self.node(id).a;
+        self.take_blob(idx)
+    }
+
+    /// Takes ownership of `id`'s class path, leaving an empty blob in its
+    /// place. See [`Arena::take_bytes_content`]. `id` must be `Kind::Class`.
+    pub fn take_class_path(&mut self, id: ValueId) -> Vec<u8> {
+        debug_assert!(self.node(id).kind == Kind::Class, "take_class_path on a non-Class node");
+        let idx = self.node(id).a;
+        self.take_blob(idx)
+    }
+
+    /// Takes ownership of `id`'s module path, leaving an empty blob in its
+    /// place. See [`Arena::take_bytes_content`]. `id` must be
+    /// `Kind::Module`.
+    pub fn take_module_path(&mut self, id: ValueId) -> Vec<u8> {
+        debug_assert!(
+            self.node(id).kind == Kind::Module,
+            "take_module_path on a non-Module node"
+        );
+        let idx = self.node(id).a;
+        self.take_blob(idx)
+    }
 }
