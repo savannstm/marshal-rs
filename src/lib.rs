@@ -41,6 +41,6 @@ pub use encoding::{
     ENCODING_ASCII_8BIT, ENCODING_CUSTOM, ENCODING_US_ASCII, ENCODING_UTF_8, encoding_id, encoding_name,
 };
 #[cfg(feature = "alloc")]
-pub use load::load;
+pub use load::{load, load_many};
 #[cfg(feature = "alloc")]
 pub use value::ValueRef;

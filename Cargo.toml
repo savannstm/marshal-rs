@@ -1,6 +1,6 @@
 [package]
 name = "marshal-rs"
-version = "3.2.0"
+version = "3.3.0"
 authors = ["savannstm <savannstm@gmail.com>"]
 edition = "2021"
 rust-version = "1.73.0"
@@ -15,7 +15,7 @@ keywords = ["marshal", "ruby", "serialize", "deserialize", "no_std"]
 members = ["crates/marshal-rs-capi", "crates/marshal-rs-wasm"]
 
 [workspace.package]
-version = "3.2.0"
+version = "3.3.0"
 edition = "2021"
 rust-version = "1.73.0"
 authors = ["savannstm <savannstm@gmail.com>"]
@@ -33,7 +33,7 @@ serde = ["alloc", "dep:serde"]
 serde = { version = "1.0.229", optional = true, default-features = false, features = [
     "alloc",
 ] }
-thiserror = { version = "2.0.20", default-features = false }
+thiserror = { version = "2.0.21", default-features = false }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", default-features = false }

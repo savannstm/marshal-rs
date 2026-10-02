@@ -24,6 +24,29 @@ pub fn load(bytes: &[u8]) -> Result<Arena<'_>, ReadError> {
     Ok(arena)
 }
 
+/// Loads every Marshal stream concatenated in `bytes`, such as an RPG Maker XP/VX/VX Ace save file
+/// that is a series of `Marshal.dump` calls into one file.
+///
+/// # Errors
+///
+/// Returns [`ReadError`] if any of the streams isn't a well-formed Marshal 4.8 stream.
+pub fn load_many(bytes: &[u8]) -> Result<Vec<Arena<'_>>, ReadError> {
+    let mut arenas = Vec::new();
+    let mut offset = 0;
+
+    while offset < bytes.len() {
+        let mut arena = Arena::new();
+        let mut symbol_spans: Vec<Span> = Vec::new();
+        let mut reader = Reader::new(&bytes[offset..], &mut symbol_spans)?;
+        let root = build(&mut reader, &mut arena)?;
+        arena.root = root;
+        offset += reader.position();
+        arenas.push(arena);
+    }
+
+    Ok(arenas)
+}
+
 /// One pending "resume point" in the iterative builder - see the module
 /// doc comment for the overall shape of the algorithm.
 #[derive(Clone, Copy)]
