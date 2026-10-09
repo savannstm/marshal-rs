@@ -1,24 +1,38 @@
 [package]
 name = "marshal-rs"
-version = "3.3.0"
+version = "3.3.1"
 authors = ["savannstm <savannstm@gmail.com>"]
 edition = "2021"
-rust-version = "1.73.0"
+rust-version = "1.77.0"
 description = "Blazingly fast, no_std-capable Ruby-lang Marshal implementation in Rust."
 readme = "README.md"
 repository = "https://github.com/savannstm/marshal-rs"
+homepage = "https://crates.io/crates/marshal-rs"
 documentation = "https://docs.rs/marshal-rs/"
-license-file = "LICENSE.md"
+license = "WTFPL"
 keywords = ["marshal", "ruby", "serialize", "deserialize", "no_std"]
+categories = ["encoding", "parser-implementations", "no-std"]
+exclude = [
+    "/.gitignore",
+    "/.gitattributes",
+    "/.clang-format",
+    "/.clang-tidy",
+    "/rustfmt.toml",
+    "/benches",
+]
 
 [workspace]
 members = ["crates/marshal-rs-capi", "crates/marshal-rs-wasm"]
 
 [workspace.package]
-version = "3.3.0"
+version = "3.3.1"
 edition = "2021"
-rust-version = "1.73.0"
+rust-version = "1.77.0"
 authors = ["savannstm <savannstm@gmail.com>"]
+description = "Blazingly fast, no_std-capable Ruby-lang Marshal implementation in Rust."
+license = "WTFPL"
+repository = "https://github.com/savannstm/marshal-rs"
+homepage = "https://crates.io/crates/marshal-rs"
 
 [features]
 default = ["std", "serde"]
@@ -38,7 +52,7 @@ thiserror = { version = "2.0.21", default-features = false }
 [dev-dependencies]
 criterion = { version = "0.8.2", default-features = false }
 serde_json = "1.0.151"
-serde_norway = "0.9.42"
+yaml_serde = "0.10.7"
 
 [[test]]
 name = "roundtrip"

@@ -16,7 +16,7 @@ pub trait Sink {
     fn write(&mut self, bytes: &[u8]) -> Result<(), Self::Error>;
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum WriteError {
     #[error("output buffer capacity exceeded")]
     BufferFull,

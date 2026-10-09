@@ -12,7 +12,7 @@ cargo run --example basic
 
 ## `yaml.rs`
 
-Loads a Marshal file and re-emits it as YAML (via `serde_norway`, over the same envelope the `serde`-feature JSON support uses - see `src/ser.rs`).
+Loads a Marshal file and re-emits it as YAML (via `yaml_serde`, over the same envelope the `serde`-feature JSON support uses - see `src/ser.rs`).
 
 ```bash
 cargo run --example yaml -- path/to/Map001.rvdata2 path/to/Map001.yaml

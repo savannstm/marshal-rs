@@ -88,7 +88,7 @@ impl SymbolTable for alloc::vec::Vec<Span> {
 
 /// A single Marshal wire-format event, borrowing its byte payloads from the
 /// buffer the [`Reader`] was constructed with.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Token<'a> {
     Nil,
     True,
@@ -160,7 +160,7 @@ pub enum Token<'a> {
     BeginIvar,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum ReadError {
     #[error("unexpected end of input at byte {offset}")]
     UnexpectedEof { offset: usize },

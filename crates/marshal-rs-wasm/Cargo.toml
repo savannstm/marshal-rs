@@ -1,14 +1,19 @@
 [package]
 name = "marshal-rs-wasm"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "WASM bindings for marshal-rs: a Ruby-lang Marshal implementation."
-repository = "https://github.com/savannstm/marshal-rs"
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 documentation = "https://github.com/savannstm/marshal-rs/tree/master/crates/marshal-rs-wasm"
-license-file = "LICENSE.md"
 keywords = ["marshal", "ruby", "wasm", "serialize", "deserialize"]
 publish = false
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O", "--enable-bulk-memory"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -25,6 +30,3 @@ wasm-bindgen = "=0.2.127"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3.77"
-
-[package.metadata.wasm-pack.profile.release]
-wasm-opt = ["-O", "--enable-bulk-memory"]

@@ -1,6 +1,5 @@
 #![cfg_attr(not(test), no_std)]
-#![warn(clippy::pedantic)]
-#![warn(clippy::nursery)]
+#![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 #![doc = include_str!("../README.md")]
 
 #[cfg(feature = "alloc")]
