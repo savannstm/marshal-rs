@@ -2,4 +2,3 @@ target
 artifacts
 coverage
 corpus
-Cargo.lock
