@@ -13,7 +13,18 @@ keywords = ["marshal", "ruby", "wasm", "serialize", "deserialize"]
 publish = false
 
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = ["-O", "--enable-bulk-memory"]
+wasm-opt = [
+    "-O3",
+    "--converge",
+    "--low-memory-unused",
+    "--strip-producers",
+    "--enable-bulk-memory",
+    "--enable-nontrapping-float-to-int",
+    "--enable-sign-ext",
+    "--enable-mutable-globals",
+    "--enable-multivalue",
+    "--enable-reference-types",
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -26,7 +37,7 @@ marshal-rs = { path = "..", default-features = false, features = [
 ] }
 serde = "1.0.229"
 serde-wasm-bindgen = "0.6.5"
-wasm-bindgen = "=0.2.127"
+wasm-bindgen = "0.2.129"
 
 [dev-dependencies]
-wasm-bindgen-test = "0.3.77"
+wasm-bindgen-test = "0.3.79"
