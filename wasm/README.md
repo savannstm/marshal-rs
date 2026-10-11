@@ -2,6 +2,8 @@
 
 WebAssembly bindings for [`marshal-rs`](https://github.com/savannstm/marshal-rs), a Ruby `Marshal` implementation.
 
+> **I won't be continuing to publish this package on NPM.** NPM has made their 2FA completely unbearable, and I don't want to participate in this logging-in shitshow anymore. I'm looking for the first person I meet to whom I'll pass the ownership of this package on NPM, if they're willing to maintain it. Until then, you can always [build from source](#build-from-source).
+
 ## Install
 
 ```bash

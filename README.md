@@ -119,6 +119,12 @@ A `Str`/`Regexp` with a non-default declared encoding carries an extra `__encodi
 - [TypeScript implementation of Marshal](https://github.com/hyrious/marshal) (the original inspiration for this project).
 - [Official documentation for Marshal format](https://docs.ruby-lang.org/en/master/marshal_rdoc.html)
 
+## NPM
+
+I won't be continuing to publish the WASM bindings ([`marshal-rs-wasm`](./wasm/)) on NPM. NPM has made their 2FA completely unbearable, and I don't want to participate in this logging-in shitshow anymore.
+
+I'm looking for the first person I meet to whom I'll pass the ownership of the package on NPM, if they're willing to maintain it. Until then, you can always build the bindings from source.
+
 ## Support
 
 [Me](https://github.com/savannstm), the maintainer of this project, is a poor college student from Eastern Europe.
