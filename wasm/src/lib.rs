@@ -4,6 +4,7 @@
 //! `JsValue` has no linear-memory-backed byte slice to borrow from), so
 //! deserializing already produces an `Arena<'static>` for free - no
 //! `into_owned` needed anywhere in this crate.
+#![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 
 use marshal_rs::Arena;
 use serde::Serialize;

@@ -8,7 +8,7 @@ description.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://github.com/savannstm/marshal-rs/tree/master/crates/marshal-rs-wasm"
+documentation = "https://github.com/savannstm/marshal-rs/tree/master/wasm"
 keywords = ["marshal", "ruby", "wasm", "serialize", "deserialize"]
 publish = false
 
@@ -20,7 +20,7 @@ crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [dependencies]
-marshal-rs = { path = "../..", default-features = false, features = [
+marshal-rs = { path = "..", default-features = false, features = [
     "alloc",
     "serde",
 ] }

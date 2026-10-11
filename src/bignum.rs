@@ -2,8 +2,20 @@
 
 use alloc::{string::String, vec::Vec};
 
+/// Largest magnitude, in bytes, that [`ValueRef::as_bigint_decimal`](crate::ValueRef::as_bigint_decimal)
+/// converts to decimal. Both conversions here are quadratic: a 64 KiB magnitude takes about half a
+/// minute, so a hostile stream could otherwise hang whatever prints or serializes it. 4096 bytes
+/// (about 9,900 digits) takes ~100 ms, and no RPG Maker data comes anywhere near.
+pub const MAX_CONVERTIBLE_BYTES: usize = 4096;
+
+/// Most digits [`decimal_to_le_bytes`] accepts - [`MAX_CONVERTIBLE_BYTES`], in decimal.
+pub const MAX_CONVERTIBLE_DIGITS: usize = 10_000;
+
 /// Converts a little-endian magnitude (as Marshal stores it) to a decimal
 /// string, with a leading `-` if `negative` and the magnitude is nonzero.
+///
+/// Quadratic in `magnitude_le.len()`; callers handling untrusted input should keep it to
+/// [`MAX_CONVERTIBLE_BYTES`].
 #[allow(clippy::cast_possible_truncation)]
 #[must_use]
 pub fn le_bytes_to_decimal(negative: bool, magnitude_le: &[u8]) -> String {
@@ -45,7 +57,7 @@ pub fn le_bytes_to_decimal(negative: bool, magnitude_le: &[u8]) -> String {
 #[must_use]
 pub fn decimal_to_le_bytes(s: &str) -> Option<(bool, Vec<u8>)> {
     let (negative, digits) = s.strip_prefix('-').map_or((false, s), |rest| (true, rest));
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+    if digits.is_empty() || digits.len() > MAX_CONVERTIBLE_DIGITS || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
 

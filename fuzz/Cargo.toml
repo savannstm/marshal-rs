@@ -1,0 +1,42 @@
+[package]
+name = "marshal-rs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+marshal-rs = { path = ".." }
+serde_json = "1.0.154"
+
+[workspace]
+[[bin]]
+name = "load"
+path = "fuzz_targets/load.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ser"
+path = "fuzz_targets/ser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "de"
+path = "fuzz_targets/de.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bignum"
+path = "fuzz_targets/bignum.rs"
+test = false
+doc = false
+bench = false

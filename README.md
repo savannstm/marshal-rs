@@ -6,8 +6,8 @@ v3 is a from-scratch rewrite of the crate. The old `Value` tree (an `Rc<SafeCell
 
 This crate has some ports:
 
-- [C API](./crates/marshal-rs-capi/) - C bindings, installable via `cargo-c`.
-- [WASM](./crates/marshal-rs-wasm/) - WASM bindings generated from Rust code.
+- [C API](./capi/) - C bindings, installable via `cargo-c`.
+- [WASM](./wasm/) - WASM bindings generated from Rust code.
 
 ## Installation
 
@@ -125,11 +125,10 @@ A `Str`/`Regexp` with a non-default declared encoding carries an extra `__encodi
 
 If you could, please consider supporting us through:
 
+- [Boosty](https://boosty.to/mcdeimos) (has lower fees)
 - [Ko-fi](https://ko-fi.com/savannstm)
-- [Patreon](https://www.patreon.com/cw/savannstm)
-- [Boosty](https://boosty.to/mcdeimos)
 
-Even if you don't, it's fine. We'll continue to do as we right now.
+Even if you don't, we will still continue working on the project anyways.
 
 ## License
 

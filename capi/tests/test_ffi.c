@@ -1,4 +1,4 @@
-#include "../assets/marshal.h"
+#include <marshal-rs/marshal.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,10 +18,10 @@ static void test_scalars_and_invalid_input(void) {
     /* nil */
     {
         const uint8_t bytes[] = { 0x04, 0x08, '0' };
-        MrsError err = MRS_UNSUPPORTED;
+        MrsError err = MRS_ERROR_UNSUPPORTED;
         MrsArena* arena = mrs_load(bytes, sizeof(bytes), &err);
         CHECK(arena != NULL);
-        CHECK(err == MRS_OK);
+        CHECK(err == MRS_ERROR_OK);
         CHECK(mrs_kind(arena, mrs_root(arena)) == MRS_KIND_NIL);
         mrs_arena_free(arena);
     }
@@ -51,10 +51,10 @@ static void test_scalars_and_invalid_input(void) {
     /* invalid header -> NULL + correct error code, never a crash */
     {
         const uint8_t bytes[] = { 0x04, 0x07, '0' };
-        MrsError err = MRS_OK;
+        MrsError err = MRS_ERROR_OK;
         MrsArena* arena = mrs_load(bytes, sizeof(bytes), &err);
         CHECK(arena == NULL);
-        CHECK(err == MRS_INVALID_HEADER);
+        CHECK(err == MRS_ERROR_INVALID_HEADER);
     }
 
     /* null out_error pointer must not crash mrs_load on failure */
@@ -96,10 +96,10 @@ static MrsValueId hash_lookup_symbol(const MrsArena* arena, MrsValueId hash, con
 }
 
 static void test_hash_traversal_and_dump_roundtrip(void) {
-    MrsError err = MRS_UNSUPPORTED;
+    MrsError err = MRS_ERROR_UNSUPPORTED;
     MrsArena* arena = mrs_load(HASH_FIXTURE, sizeof(HASH_FIXTURE), &err);
     CHECK(arena != NULL);
-    CHECK(err == MRS_OK);
+    CHECK(err == MRS_ERROR_OK);
 
     MrsValueId root = mrs_root(arena);
     CHECK(mrs_kind(arena, root) == MRS_KIND_HASH);
@@ -240,7 +240,7 @@ static int test_real_fixture(const char* path) {
     }
     fclose(f);
 
-    MrsError err = MRS_UNSUPPORTED;
+    MrsError err = MRS_ERROR_UNSUPPORTED;
     MrsArena* arena = mrs_load(buf, (size_t)size, &err);
     CHECK(arena != NULL);
     if (!arena) {

@@ -1,4 +1,4 @@
-#include "../assets/marshal.h"
+#include <marshal-rs/marshal.h>
 #include "yyjson/yyjson.h"
 
 #include <stdint.h>
@@ -291,7 +291,7 @@ int main(int argc, char** argv) {
     }
     fclose(input);
 
-    MrsError error = MRS_OK;
+    MrsError error = MRS_ERROR_OK;
     MrsArena* arena = mrs_load(bytes, (size_t)size, &error);
     if (!arena) {
         fprintf(stderr, "%s: failed to load (error code %d)\n", argv[1], (int)error);

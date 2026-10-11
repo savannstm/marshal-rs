@@ -47,6 +47,7 @@ use crate::{
     value::ValueRef,
 };
 use alloc::{borrow::Cow, fmt, string::String, vec::Vec};
+use core::cell::Cell;
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 
@@ -90,30 +91,118 @@ fn flag_names(v: ValueRef<'_, '_>) -> Vec<&'static str> {
     out
 }
 
+/// Deepest nesting [`Serialize`] follows before giving up. Serializing recurses once per level, and
+/// a loaded stream can nest as deep as it is long (a cycle, being a link back to an ancestor,
+/// never stops on its own), so without this a small file overflows the stack.
+const MAX_SERIALIZE_DEPTH: usize = 256;
+
+/// How many times over each value of the arena [`Serialize`] may visit, on average. Object links
+/// let a value appear any number of times in a tree whose stream is tiny, so a few dozen bytes can
+/// stand for 2^60 serialized values; real data shares a handful of colours and strings.
+const SERIALIZE_EXPANSION: usize = 64;
+
+/// Floor for [`SERIALIZE_EXPANSION`]'s limit, so small values always have room.
+const MIN_SERIALIZE_NODES: usize = 1 << 16;
+
+/// What one top-level serialization has used so far, and how much it may.
+struct Budget {
+    depth: Cell<usize>,
+    nodes: Cell<usize>,
+    max_nodes: usize,
+}
+
+impl Budget {
+    fn for_arena(arena_len: usize) -> Self {
+        Self {
+            depth: Cell::new(0),
+            nodes: Cell::new(0),
+            max_nodes: arena_len.saturating_mul(SERIALIZE_EXPANSION).max(MIN_SERIALIZE_NODES),
+        }
+    }
+}
+
+/// Holds a level of [`Budget::depth`] until dropped.
+struct Level<'s>(&'s Budget);
+
+impl<'s> Level<'s> {
+    fn enter(budget: &'s Budget) -> Result<Self, &'static str> {
+        let nodes = budget.nodes.get() + 1;
+        let depth = budget.depth.get() + 1;
+        if nodes > budget.max_nodes {
+            return Err("too many values to serialize (shared values expand a stream into a huge tree)");
+        }
+        if depth > MAX_SERIALIZE_DEPTH {
+            return Err("nested too deeply to serialize (or it refers back to itself)");
+        }
+        budget.nodes.set(nodes);
+        budget.depth.set(depth);
+        Ok(Self(budget))
+    }
+}
+
+impl Drop for Level<'_> {
+    fn drop(&mut self) {
+        self.0.depth.set(self.0.depth.get() - 1);
+    }
+}
+
 impl Serialize for Arena<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         ValueRef::root(self).serialize(serializer)
     }
 }
 
+/// Fails with an error, rather than overflowing the stack or running forever, on a value nested
+/// deeper than 256 levels (which includes one that contains itself) or that expands, through shared
+/// values, to more than 64 times the arena's size (at least 65536) values.
 impl Serialize for ValueRef<'_, '_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self.kind() {
+        let budget = Budget::for_arena(self.arena().len());
+        Bounded {
+            value: *self,
+            budget: &budget,
+        }
+        .serialize(serializer)
+    }
+}
+
+/// A [`ValueRef`] being serialized as part of a call that is counting its [`Budget`].
+#[derive(Clone, Copy)]
+struct Bounded<'s, 'r, 'a> {
+    value: ValueRef<'r, 'a>,
+    budget: &'s Budget,
+}
+
+impl<'s, 'r, 'a> Bounded<'s, 'r, 'a> {
+    const fn child(&self, value: ValueRef<'r, 'a>) -> Self {
+        Self {
+            value,
+            budget: self.budget,
+        }
+    }
+}
+
+impl Serialize for Bounded<'_, '_, '_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let _level = Level::enter(self.budget).map_err(serde::ser::Error::custom)?;
+        let value = self.value;
+
+        match value.kind() {
             Kind::Nil => serializer.serialize_unit(),
             Kind::True => serializer.serialize_bool(true),
             Kind::False => serializer.serialize_bool(false),
-            Kind::Fixnum => serializer.serialize_i64(self.as_i64().unwrap()),
+            Kind::Fixnum => serializer.serialize_i64(value.as_i64().unwrap()),
             kind => {
                 let mut map = serializer.serialize_map(None)?;
                 map.serialize_entry("__type", type_name(kind))?;
-                if let Some(class) = self.class_name() {
+                if let Some(class) = value.class_name() {
                     map.serialize_entry("__class", &String::from_utf8_lossy(class))?;
                 }
-                let flags = flag_names(*self);
+                let flags = flag_names(value);
                 if !flags.is_empty() {
                     map.serialize_entry("__flags", &flags)?;
                 }
-                let extensions: Vec<String> = self
+                let extensions: Vec<String> = value
                     .extensions()
                     .map(|m| String::from_utf8_lossy(m).into_owned())
                     .collect();
@@ -121,24 +210,27 @@ impl Serialize for ValueRef<'_, '_> {
                     map.serialize_entry("__extensions", &extensions)?;
                 }
                 if matches!(kind, Kind::Str | Kind::Regexp) {
-                    let encoding = self
+                    let encoding = value
                         .encoding_id()
                         .filter(|&id| id != crate::encoding::ENCODING_ASCII_8BIT)
-                        .and_then(|_| self.encoding_name());
+                        .and_then(|_| value.encoding_name());
                     if let Some(name) = encoding {
                         map.serialize_entry("__encoding", &String::from_utf8_lossy(name))?;
                     }
                 }
                 match kind {
                     Kind::Bignum => {
-                        map.serialize_entry("__value", &self.as_bigint_decimal().unwrap())?;
+                        let decimal = value.as_bigint_decimal().ok_or_else(|| {
+                            serde::ser::Error::custom("bignum too large to convert to decimal")
+                        })?;
+                        map.serialize_entry("__value", &decimal)?;
                     }
                     Kind::Float => {
-                        let text = String::from_utf8_lossy(self.as_float_bytes().unwrap());
+                        let text = String::from_utf8_lossy(value.as_float_bytes().unwrap());
                         map.serialize_entry("__value", &text)?;
                     }
                     Kind::Bytes => {
-                        map.serialize_entry("__value", self.as_bytes().unwrap())?;
+                        map.serialize_entry("__value", value.as_bytes().unwrap())?;
                     }
                     // Prefer plain text when the bytes happen to validate
                     // (the overwhelmingly common case, and much more
@@ -146,16 +238,16 @@ impl Serialize for ValueRef<'_, '_> {
                     // exactly like `Bytes`. `__encoding` above (not this
                     // shape) is what carries the actual declared encoding;
                     // deserialize accepts either shape for `__value`.
-                    Kind::Str => match self.as_str() {
+                    Kind::Str => match value.as_str() {
                         Some(text) => map.serialize_entry("__value", text)?,
-                        None => map.serialize_entry("__value", self.as_bytes().unwrap())?,
+                        None => map.serialize_entry("__value", value.as_bytes().unwrap())?,
                     },
                     Kind::Symbol => {
-                        let text = String::from_utf8_lossy(self.as_symbol_bytes().unwrap());
+                        let text = String::from_utf8_lossy(value.as_symbol_bytes().unwrap());
                         map.serialize_entry("__value", &text)?;
                     }
                     Kind::Regexp => {
-                        let (source, options) = self.as_regexp().unwrap();
+                        let (source, options) = value.as_regexp().unwrap();
                         map.serialize_entry("__value", &(source, options))?;
                     }
                     Kind::Array => {
@@ -163,15 +255,15 @@ impl Serialize for ValueRef<'_, '_> {
                     }
                     Kind::Hash => {
                         map.serialize_entry("__value", &HashSeq(*self))?;
-                        if let Some(default) = self.default_value() {
-                            map.serialize_entry("__default", &default)?;
+                        if let Some(default) = value.default_value() {
+                            map.serialize_entry("__default", &self.child(default))?;
                         }
                     }
                     Kind::Struct | Kind::Object => {
                         map.serialize_entry("__members", &MembersSeq(*self))?;
                     }
                     Kind::Class | Kind::Module => {
-                        let text = String::from_utf8_lossy(self.as_path().unwrap());
+                        let text = String::from_utf8_lossy(value.as_path().unwrap());
                         map.serialize_entry("__value", &text)?;
                     }
                     Kind::Nil | Kind::True | Kind::False | Kind::Fixnum => {
@@ -184,34 +276,34 @@ impl Serialize for ValueRef<'_, '_> {
     }
 }
 
-struct ArraySeq<'r, 'a>(ValueRef<'r, 'a>);
-impl Serialize for ArraySeq<'_, '_> {
+struct ArraySeq<'s, 'r, 'a>(Bounded<'s, 'r, 'a>);
+impl Serialize for ArraySeq<'_, '_, '_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
-        for item in self.0.array() {
-            seq.serialize_element(&item)?;
+        let mut seq = serializer.serialize_seq(Some(self.0.value.len()))?;
+        for item in self.0.value.array() {
+            seq.serialize_element(&self.0.child(item))?;
         }
         seq.end()
     }
 }
 
-struct HashSeq<'r, 'a>(ValueRef<'r, 'a>);
-impl Serialize for HashSeq<'_, '_> {
+struct HashSeq<'s, 'r, 'a>(Bounded<'s, 'r, 'a>);
+impl Serialize for HashSeq<'_, '_, '_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
-        for (k, v) in self.0.entries() {
-            seq.serialize_element(&(k, v))?;
+        let mut seq = serializer.serialize_seq(Some(self.0.value.len()))?;
+        for (k, v) in self.0.value.entries() {
+            seq.serialize_element(&(self.0.child(k), self.0.child(v)))?;
         }
         seq.end()
     }
 }
 
-struct MembersSeq<'r, 'a>(ValueRef<'r, 'a>);
-impl Serialize for MembersSeq<'_, '_> {
+struct MembersSeq<'s, 'r, 'a>(Bounded<'s, 'r, 'a>);
+impl Serialize for MembersSeq<'_, '_, '_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
-        for (name, value) in self.0.members() {
-            seq.serialize_element(&(String::from_utf8_lossy(name), value))?;
+        let mut seq = serializer.serialize_seq(Some(self.0.value.len()))?;
+        for (name, value) in self.0.value.members() {
+            seq.serialize_element(&(String::from_utf8_lossy(name), self.0.child(value)))?;
         }
         seq.end()
     }
@@ -333,6 +425,18 @@ impl<'de> Visitor<'de> for ValueVisitor<'_> {
                     let _ = map.next_value::<de::IgnoredAny>()?;
                 }
             }
+        }
+
+        // These flags make `dump` write the class name, and `user_defined` reads the value's bytes
+        // back as a blob; without them a value would be inconsistent, and dumping it would index
+        // out of bounds.
+        if (user_class || data || user_marshal || user_defined) && class.is_none() {
+            return Err(de::Error::custom(
+                "\"user_class\", \"data\", \"user_marshal\" and \"user_defined\" need a \"__class\"",
+            ));
+        }
+        if user_defined && !matches!(type_name.as_str(), "bytes" | "str") {
+            return Err(de::Error::custom("\"user_defined\" is only valid on \"bytes\" and \"str\""));
         }
 
         let id = build_from_payload(

@@ -1,8 +1,8 @@
 //! Writes an [`Arena`] back to a Marshal byte stream.
 //!
-//! Traversal is recursive: dumping only ever walks an already-validated
-//! [`Arena`], not untrusted bytes, so a maliciously deep *input* can't reach
-//! this path.
+//! Traversal is iterative, over an explicit work stack: an [`Arena`] loaded from
+//! hostile bytes can be as deep as the input is long (two bytes an array level),
+//! so recursing here would let a 200 KB file overflow the call stack.
 
 use crate::{
     arena::{Arena, Flags, Kind, SymId, ValueId},
@@ -27,6 +27,7 @@ pub fn dump(arena: &Arena<'_>) -> Vec<u8> {
         next_obj: 0,
         e_symbol_link: u32::MAX,
         encoding_symbol_link: u32::MAX,
+        work: Vec::new(),
     };
     let _: Result<(), core::convert::Infallible> = dumper.writer.write_header();
     dumper.write_value(arena.root());
@@ -42,9 +43,33 @@ struct Dumper<'r, 'a> {
     next_obj: u32,
     e_symbol_link: u32,
     encoding_symbol_link: u32,
+    work: Vec<Work>,
+}
+
+/// One pending write. Items are popped in the order the wire format wants them, so a container
+/// pushes its parts in reverse.
+enum Work {
+    Value(ValueId),
+    /// An object/struct member name, which precedes that member's value.
+    MemberName(SymId),
+    /// The ivar pair that follows a string's or regexp's whole body.
+    TrailingEncoding { encoding_id: u8, target: ValueId },
 }
 
 impl Dumper<'_, '_> {
+    fn write_value(&mut self, root: ValueId) {
+        self.work.push(Work::Value(root));
+        while let Some(item) = self.work.pop() {
+            match item {
+                Work::Value(id) => self.write_node(id),
+                Work::MemberName(sym) => self.write_member_name(sym),
+                Work::TrailingEncoding { encoding_id, target } => {
+                    self.write_trailing_encoding_ivar(encoding_id, target);
+                }
+            }
+        }
+    }
+
     fn write_symbol_ref(&mut self, sym: SymId) {
         let slot = &mut self.sym_link[sym as usize];
         if *slot != u32::MAX {
@@ -77,7 +102,7 @@ impl Dumper<'_, '_> {
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap
     )]
-    fn write_value(&mut self, id: ValueId) {
+    fn write_node(&mut self, id: ValueId) {
         let node = *self.arena.node(id);
 
         match node.kind {
@@ -160,6 +185,11 @@ impl Dumper<'_, '_> {
             class_written = true;
         }
 
+        // Pushed before the children so it's popped after them: it trails the value's whole body.
+        if let Some(encoding_id) = encoding_id {
+            self.work.push(Work::TrailingEncoding { encoding_id, target: id });
+        }
+
         match node.kind {
             Kind::Nil | Kind::True | Kind::False | Kind::Fixnum | Kind::Symbol => unreachable!(),
 
@@ -188,9 +218,9 @@ impl Dumper<'_, '_> {
 
             Kind::Array => {
                 let _ = self.writer.write_array_header(node.b);
-                for i in 0..node.b {
+                for i in (0..node.b).rev() {
                     let child = self.arena.children[(node.a + i) as usize];
-                    self.write_value(child);
+                    self.work.push(Work::Value(child));
                 }
             }
 
@@ -198,15 +228,15 @@ impl Dumper<'_, '_> {
                 let _ = self
                     .writer
                     .write_hash_header(node.b, node.flags.contains(Flags::HAS_DEFAULT));
-                for i in 0..node.b {
-                    let key = self.arena.children[(node.a + i * 2) as usize];
-                    let value = self.arena.children[(node.a + i * 2 + 1) as usize];
-                    self.write_value(key);
-                    self.write_value(value);
-                }
                 if node.flags.contains(Flags::HAS_DEFAULT) {
                     let default = self.arena.children[(node.a + node.b * 2) as usize];
-                    self.write_value(default);
+                    self.work.push(Work::Value(default));
+                }
+                for i in (0..node.b).rev() {
+                    let key = self.arena.children[(node.a + i * 2) as usize];
+                    let value = self.arena.children[(node.a + i * 2 + 1) as usize];
+                    self.work.push(Work::Value(value));
+                    self.work.push(Work::Value(key));
                 }
             }
 
@@ -216,11 +246,7 @@ impl Dumper<'_, '_> {
                     self.write_symbol_ref(node.class);
                 }
                 let _ = self.writer.write_len(node.b);
-                for i in 0..node.b {
-                    let (name, value) = self.arena.members[(node.a + i) as usize];
-                    self.write_member_name(name);
-                    self.write_value(value);
-                }
+                self.push_members(node.a, node.b);
             }
 
             Kind::Object => {
@@ -229,11 +255,7 @@ impl Dumper<'_, '_> {
                     self.write_symbol_ref(node.class);
                 }
                 let _ = self.writer.write_len(node.b);
-                for i in 0..node.b {
-                    let (name, value) = self.arena.members[(node.a + i) as usize];
-                    self.write_member_name(name);
-                    self.write_value(value);
-                }
+                self.push_members(node.a, node.b);
             }
 
             Kind::Class => {
@@ -249,9 +271,14 @@ impl Dumper<'_, '_> {
                 }
             }
         }
+    }
 
-        if let Some(encoding_id) = encoding_id {
-            self.write_trailing_encoding_ivar(encoding_id, id);
+    /// Queues `len` members starting at `start`, each as its name and then its value.
+    fn push_members(&mut self, start: u32, len: u32) {
+        for i in (0..len).rev() {
+            let (name, value) = self.arena.members[(start + i) as usize];
+            self.work.push(Work::Value(value));
+            self.work.push(Work::MemberName(name));
         }
     }
 

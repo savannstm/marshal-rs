@@ -119,10 +119,17 @@ impl<'r, 'a> ValueRef<'r, 'a> {
         (node.kind == Kind::Bignum).then(|| (node.flags.contains(Flags::NEGATIVE), self.arena.blob(node.a)))
     }
 
+    /// The bignum as a decimal string, or `None` if this isn't a bignum or its magnitude is over
+    /// [`bignum::MAX_CONVERTIBLE_BYTES`] - the conversion is quadratic, and a hostile stream can
+    /// carry a bignum of any size. [`ValueRef::as_bignum_bytes`] has no such limit.
     #[cfg(feature = "alloc")]
     #[must_use]
     pub fn as_bigint_decimal(&self) -> Option<String> {
         let (negative, magnitude) = self.as_bignum_bytes()?;
+        // The conversion is quadratic, see `bignum::MAX_CONVERTIBLE_BYTES`.
+        if magnitude.len() > bignum::MAX_CONVERTIBLE_BYTES {
+            return None;
+        }
         Some(bignum::le_bytes_to_decimal(negative, magnitude))
     }
 
@@ -364,7 +371,22 @@ impl<'r, 'a> ValueRef<'r, 'a> {
 /// used for hash-key lookup. Object identity (`ValueId`) is deliberately
 /// not part of this - two separately-built but content-equal strings are
 /// equal keys, matching Ruby's `Hash#[]` semantics for value types.
+///
+/// An array that contains itself, or that shares a sub-array with itself many times over, makes
+/// the walk unbounded, so it is bounded: past `MAX_EQ_DEPTH` levels or `MAX_EQ_STEPS` arrays
+/// compared, two values count as unequal. A value is always equal to itself.
 fn value_eq(a: ValueRef<'_, '_>, b: ValueRef<'_, '_>) -> bool {
+    const MAX_EQ_DEPTH: usize = 256;
+    const MAX_EQ_STEPS: usize = 1 << 20;
+
+    value_eq_within(a, b, MAX_EQ_DEPTH, &mut MAX_EQ_STEPS.clone())
+}
+
+fn value_eq_within(a: ValueRef<'_, '_>, b: ValueRef<'_, '_>, depth: usize, steps: &mut usize) -> bool {
+    if a.id == b.id && core::ptr::eq(a.arena, b.arena) {
+        return true;
+    }
+
     match (a.kind(), b.kind()) {
         (Kind::Nil, Kind::Nil) | (Kind::True, Kind::True) | (Kind::False, Kind::False) => true,
         (Kind::Fixnum, Kind::Fixnum) => a.as_i64() == b.as_i64(),
@@ -372,7 +394,16 @@ fn value_eq(a: ValueRef<'_, '_>, b: ValueRef<'_, '_>) -> bool {
         (Kind::Float, Kind::Float) => a.as_float_bytes() == b.as_float_bytes(),
         (Kind::Str, Kind::Str) | (Kind::Bytes, Kind::Bytes) => a.as_bytes() == b.as_bytes(),
         (Kind::Symbol, Kind::Symbol) => a.as_symbol_bytes() == b.as_symbol_bytes(),
-        (Kind::Array, Kind::Array) => a.len() == b.len() && a.array().zip(b.array()).all(|(x, y)| value_eq(x, y)),
+        (Kind::Array, Kind::Array) => {
+            if depth == 0 || *steps == 0 {
+                return false;
+            }
+            *steps -= 1;
+            a.len() == b.len()
+                && a.array()
+                    .zip(b.array())
+                    .all(|(x, y)| value_eq_within(x, y, depth - 1, steps))
+        }
         _ => false,
     }
 }
