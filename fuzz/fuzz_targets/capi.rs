@@ -14,7 +14,8 @@ use std::{collections::HashSet, hint::black_box, ptr, slice};
 /// Copies out the dump of `arena` and frees the C buffer.
 fn dump(arena: &MrsArena) -> Vec<u8> {
     let mut len = 0usize;
-    let dumped = mrs_dump(arena, &mut len);
+    // SAFETY: `arena` is a valid handle, and `len` is a writable `usize`.
+    let dumped = unsafe { mrs_dump(arena, &mut len) };
     // SAFETY: `mrs_dump` returns `len` initialized bytes, which stay valid until `mrs_buffer_free` below.
     let bytes = unsafe { slice::from_raw_parts(dumped, len) }.to_vec();
     mrs_buffer_free(dumped, len);
@@ -23,13 +24,15 @@ fn dump(arena: &MrsArena) -> Vec<u8> {
 
 /// Loads `bytes` and dumps the result, or returns `None` if the C API refuses them.
 fn load_and_dump(bytes: &[u8]) -> Option<Vec<u8>> {
-    let arena = mrs_load(bytes.as_ptr(), bytes.len(), ptr::null_mut());
+    // SAFETY: `bytes` is a live slice, so its pointer is readable for `bytes.len()` bytes. A null `out_error` is allowed.
+    let arena = unsafe { mrs_load(bytes.as_ptr(), bytes.len(), ptr::null_mut()) };
     if arena.is_null() {
         return None;
     }
     // SAFETY: `arena` is non-null and was just returned by `mrs_load`, so it is a live arena that nothing else holds.
     let dumped = dump(unsafe { &*arena });
-    mrs_arena_free(arena);
+    // SAFETY: `arena` is the non-null handle from `mrs_load` above, and nothing has freed it yet.
+    unsafe { mrs_arena_free(arena) };
     Some(dumped)
 }
 
@@ -101,16 +104,20 @@ fn build(data: &[u8]) {
     let mut items = Vec::new();
     for chunk in data.chunks(5).take(64) {
         let (chunk_ptr, chunk_len) = (chunk.as_ptr(), chunk.len());
-        let ids = [
-            mrs_push_bytes(built, chunk_ptr, chunk_len),
-            mrs_push_string(built, chunk_ptr, chunk_len),
-            mrs_push_symbol(built, chunk_ptr, chunk_len),
-        ];
+        // SAFETY: `chunk` is a live slice, so `chunk_ptr` is readable for `chunk_len` bytes, and `built` is the live arena.
+        let ids = unsafe {
+            [
+                mrs_push_bytes(built, chunk_ptr, chunk_len),
+                mrs_push_string(built, chunk_ptr, chunk_len),
+                mrs_push_symbol(built, chunk_ptr, chunk_len),
+            ]
+        };
         // Text that is not valid UTF-8 has no string value, so its id is `MRS_VALUE_ID_NONE`.
         items.extend(ids.into_iter().filter(|&id| id != MRS_VALUE_ID_NONE));
     }
 
-    let root = mrs_push_array(built, items.as_ptr(), items.len());
+    // SAFETY: `items` is a live slice of `items.len()` ids, and `built` is the live arena.
+    let root = unsafe { mrs_push_array(built, items.as_ptr(), items.len()) };
     if root != MRS_VALUE_ID_NONE && mrs_set_root(built, root) {
         let dumped = dump(built);
         assert_eq!(
@@ -120,7 +127,8 @@ fn build(data: &[u8]) {
         );
     }
 
-    mrs_arena_free(arena);
+    // SAFETY: `arena` came from `mrs_arena_new` and is freed exactly once, after `built` is last used.
+    unsafe { mrs_arena_free(arena) };
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -128,7 +136,8 @@ fuzz_target!(|data: &[u8]| {
     let framed = [&[4u8, 8][..], data].concat();
     let input = if data.first().is_some_and(|byte| byte % 2 == 0) { &framed[..] } else { data };
 
-    let arena = mrs_load(input.as_ptr(), input.len(), ptr::null_mut());
+    // SAFETY: `input` is a live slice, so its pointer is readable for `input.len()` bytes. A null `out_error` is allowed.
+    let arena = unsafe { mrs_load(input.as_ptr(), input.len(), ptr::null_mut()) };
     if !arena.is_null() {
         // SAFETY: `arena` is non-null and was just returned by `mrs_load`, so it is a live arena until `mrs_arena_free`.
         let loaded = unsafe { &*arena };
@@ -139,7 +148,8 @@ fuzz_target!(|data: &[u8]| {
             Some(dumped.as_slice()),
             "dump does not round-trip"
         );
-        mrs_arena_free(arena);
+        // SAFETY: `arena` is the non-null handle from `mrs_load`, and `loaded` is not used after this.
+        unsafe { mrs_arena_free(arena) };
     }
 
     build(data);

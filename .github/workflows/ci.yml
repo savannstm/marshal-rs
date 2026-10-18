@@ -131,6 +131,8 @@ jobs:
       - name: Run tests under AddressSanitizer
         env:
           RUSTFLAGS: -Zsanitizer=address
+          # `-Zbuild-std` rebuilds std under the dev profile, which is `panic = "abort"`, and the test harness needs unwinding.
+          CARGO_PROFILE_DEV_PANIC: unwind
         run: cargo test --no-fail-fast -Zbuild-std --locked --all-features --target x86_64-unknown-linux-gnu --tests -p marshal-rs -p marshal-rs-capi
       - name: C test under AddressSanitizer
         env:

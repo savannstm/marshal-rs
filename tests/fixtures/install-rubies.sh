@@ -23,7 +23,17 @@ build_ruby() {
   local version=$1
   shift
   if [ ! -x "$prefix/$version/bin/ruby" ]; then
-    env "$@" "$ruby_build/bin/ruby-build" "$version" "$prefix/$version"
+    if ! env "$@" "$ruby_build/bin/ruby-build" "$version" "$prefix/$version"; then
+      # ruby-build keeps the failing step's output in its own log, which the job log doesn't otherwise show.
+      local log
+      log=$(ls -t /tmp/ruby-build.*.log 2>/dev/null | head -n 1 || true)
+      if [ -n "$log" ]; then
+        echo "::group::Last 300 lines of $log"
+        tail -n 300 "$log"
+        echo "::endgroup::"
+      fi
+      return 1
+    fi
   fi
 }
 
