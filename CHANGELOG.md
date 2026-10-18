@@ -1,0 +1,30 @@
+## 4.0.0
+
+- **Breaking:** `load` now rejects bytes after the value, in Rust, C and WASM. Use `load_many` for files holding several streams.
+- **Breaking:** `marshal_dump` and `_dump_data` values no longer merge into their body. `class_name()` returns the wrapper's class; use `body()` for the inner value's class.
+- **Breaking:** Arena setters, and the `push_*` functions that take an id, a name or an encoding, return `None` or `false` on invalid input instead of panicking. Handle the failure case.
+- **Breaking:** `Arena::set_class`, `clear_class`, `add_flags`, `remove_flags` and `set_flags` are removed. Use `set_user_class`, `set_user_defined` or `push_user_marshal` instead.
+- **Breaking:** `Arena::set_string_text` now tags the string as UTF-8. Use `set_str_content` to keep its current encoding.
+- **Breaking:** JSON marks `marshal_dump` and `_dump_data` values with `"__type": "user_marshal"` or `"data"` instead of `__flags`. Update parsers to check `__type`.
+- Added Rust `Arena` methods for building and editing values, including encodings, `marshal_dump` wrappers and extra instance variables.
+- Added `Envelope` to serialize binary data in a format's native byte type, such as CBOR byte strings.
+- Fixed non-ASCII symbols, such as class and member names, losing their encoding when a file is saved again.
+- Fixed instance variables other than the encoding being dropped from strings, arrays and hashes on save.
+- Fixed a user-defined value inside an extended module (`I` then `e`) being numbered before its instance variables on load, so a later link to it pointed at the wrong object.
+- Fixed serialization writing an instance variable with an empty name, which `load` refuses. Serialization now returns an error instead.
+- Fixed JSON output replacing non-UTF-8 names and float text with U+FFFD. They are now kept as base64.
+- JSON keys may appear in any order; `__type` no longer has to come first.
+- JSON writes binary data as base64 strings instead of byte arrays. Byte arrays still load.
+- WASM returns binary data as `Uint8Array`s instead of plain arrays.
+- `ValueRef::as_str` returns nothing for strings declared in a non-UTF-8 encoding, even when their bytes are valid UTF-8.
+- `extensions()` lists modules in the order they appear in the stream.
+- A failed allocation in the C library aborts the process instead of returning an error. Only the first `mrs_set_allocator` call takes effect.
+- **Breaking:** `load` reports a negative length or count, such as a negative instance-variable count, as `ReadError::NegativeLength` (`MRS_ERROR_NEGATIVE_LENGTH` in C, `negative_length` in WASM) instead of `LengthOverflow`. It gives the byte offset.
+- Error messages say "unexpected type tag" instead of "unknown type tag" when a known tag appears where a symbol is required.
+- `load` rejects a class or module with an empty name, as Ruby does. The error is `ReadError::EmptyName`, `MRS_ERROR_EMPTY_NAME` in C and `empty_name` in WASM. Such a stream used to load and then fail to dump.
+- Bignums loaded with high zero bytes dump without them, as Ruby writes them.
+- JSON class and module names without a UTF-8 tag stay untagged; a tag comes from `__ivars`. Such a name used to come back tagged, which changed its dump.
+- `take_class_path` and `take_module_path` leave `nil` in place of the taken class or module, and `take_float_ascii` leaves `0.0`. Dumping after those calls used to produce a stream that failed to load.
+- **Breaking:** `Arena::node` and the `Node` type are no longer public. Read values through `ValueRef` (`ValueRef::new` or `ValueRef::root`) instead.
+- **Breaking:** `Arena::builder` is no longer a `const fn`.
+- The minimum supported Rust version is now 1.81, up from 1.77.

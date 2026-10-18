@@ -20,8 +20,10 @@ name = "marshal_rs"
 
 [lib]
 name = "marshal_rs"
-crate-type = ["cdylib", "staticlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 doctest = false
+# Shares the `marshal_rs` doc output path with the root crate; C API docs aren't published.
+doc = false
 
 [features]
 default = ["std"]

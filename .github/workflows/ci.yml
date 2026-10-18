@@ -1,0 +1,324 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly, so the fuzz jobs run for 60 minutes each instead of the 60 seconds of a normal run.
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Formatting and clippy
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    timeout-minutes: 45
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The fixture tests write data with real Ruby and verify marshal-rs output with it; CI requires Ruby to be present.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - run: cargo test --no-fail-fast --locked --all-features
+      # The workspace root is the default member, so the C API's unit tests run only when named.
+      - run: cargo test --no-fail-fast --locked --all-features -p marshal-rs-capi
+
+  features:
+    name: Feature builds
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --all-targets --no-default-features
+      # The README doctests need alloc, so the alloc run below covers them.
+      - run: cargo test --no-fail-fast --locked --no-default-features --tests
+      - run: cargo test --no-fail-fast --locked --no-default-features --features alloc
+      - name: C library without std
+        run: cargo build --locked -p marshal-rs-capi --no-default-features
+
+  msrv:
+    name: MSRV (1.81)
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.81
+      - uses: Swatinem/rust-cache@v2
+      # Libraries only: the dev-dependencies need a newer Cargo than 1.81 to even be parsed.
+      - run: cargo check --locked -p marshal-rs -p marshal-rs-capi --lib --all-features
+      - run: cargo check --locked -p marshal-rs-capi --lib --no-default-features
+
+  c-api:
+    name: C API test
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen
+      - run: cargo build --locked -p marshal-rs-capi --all-features
+      # The header goes under marshal-rs/ because c_api.c includes <marshal-rs/marshal.h>.
+      - run: cbindgen --config capi/cbindgen.toml --crate marshal-rs-capi --output target/capi/marshal-rs/marshal.h
+      - run: cc -std=c11 -Wall -Wextra -Werror -Itarget/capi capi/tests/c_api.c target/debug/libmarshal_rs.a -lpthread -ldl -lm -o target/capi/c_api
+      - run: target/capi/c_api
+
+  asan:
+    name: AddressSanitizer
+    timeout-minutes: 60
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen
+      - run: sudo apt-get update && sudo apt-get install -y clang
+      # The fixture tests spawn Ruby, so the library's tests need it on PATH, as in the test job.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      # The FFI's unsafe code (allocation, frees, borrowed strings) and the library's `base64` unsafe code are what this checks.
+      - name: Run tests under AddressSanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+        run: cargo test --no-fail-fast -Zbuild-std --locked --all-features --target x86_64-unknown-linux-gnu --tests -p marshal-rs -p marshal-rs-capi
+      - name: C test under AddressSanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+        run: |
+          cargo build -Zbuild-std --locked --target x86_64-unknown-linux-gnu --all-features -p marshal-rs-capi
+          cbindgen --config capi/cbindgen.toml --crate marshal-rs-capi --output target/capi/marshal-rs/marshal.h
+          clang -std=c11 -Wall -Wextra -Werror -fsanitize=address -Itarget/capi capi/tests/c_api.c target/x86_64-unknown-linux-gnu/debug/libmarshal_rs.a -lpthread -ldl -lm -o target/capi/c_api_asan
+          target/capi/c_api_asan
+
+  miri:
+    name: Miri
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo miri setup
+      # The fixture tests (ruby_fixtures, ruby_matrix) are `cfg(not(miri))` because they spawn Ruby. Skips the slow inputs in `malformed`: deep nesting, the exponential shared structure, and huge or near-limit bignums (too slow under Miri).
+      - run: cargo miri test --no-fail-fast --locked --all-features --tests -- --skip deep_input --skip huge_bignums --skip bignums_within_the_limit --skip shared_values_do_not_serialize
+      - run: cargo miri test --no-fail-fast --locked --all-features -p marshal-rs-capi
+
+  ruby-matrix:
+    name: Ruby versions (1.8.7 to 4.0.7)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build dependencies of the Rubies
+        run: sudo apt-get update && sudo apt-get install -y autoconf bison libssl-dev libyaml-dev zlib1g-dev libreadline-dev libffi-dev libgdbm-dev libncurses-dev libgdbm-compat-dev
+      - name: Restore the Rubies
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/rubies
+          key: rubies-${{ runner.os }}-${{ hashFiles('tests/fixtures/install-rubies.sh') }}
+      - name: Build the Rubies (1.8.7, 1.9.3, 2.7.8, 3.3.8, 4.0.7)
+        run: bash tests/fixtures/install-rubies.sh "$RUNNER_TEMP/rubies"
+      - name: Point the tests at the Rubies
+        run: |
+          echo "RUBIES=$(cat "$RUNNER_TEMP/rubies/rubies.txt")" >> "$GITHUB_ENV"
+          echo "RUBY187=$RUNNER_TEMP/rubies/1.8.7-p374/bin/ruby" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/rubies/4.0.7/bin" >> "$GITHUB_PATH"
+      - name: Test the fixtures and the version matrix
+        env:
+          # Without this, a Ruby build that failed leaves RUBIES empty and the matrix test passes with nothing tested.
+          MARSHAL_REQUIRE_RUBIES: "1"
+        run: cargo test --no-fail-fast --locked --all-features --test ruby_fixtures --test ruby_matrix
+
+  ruby-windows:
+    name: Ruby 1.8.7, 1.9.3, 2.7.8 and 3.3.8 (Windows)
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # setup-ruby has no 1.8.7 on Windows: this is RubyInstaller's installer, checked against its SHA-256.
+      - name: Install Ruby 1.8.7
+        shell: pwsh
+        run: |
+          $installer = "$env:RUNNER_TEMP\rubyinstaller-1.8.7-p374.exe"
+          Invoke-WebRequest -Uri "https://github.com/oneclick/rubyinstaller/releases/download/ruby-1.8.7-p374/rubyinstaller-1.8.7-p374.exe" -OutFile $installer
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash -ne "BA66CDF0A58AA3564BBDDE77FF6075186D5C70EFB02EEB73EB372FC9D08BF9FE") {
+            throw "the Ruby 1.8.7 installer does not match its SHA-256"
+          }
+          $dir = "$env:RUNNER_TEMP\ruby187"
+          $install = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "the Ruby 1.8.7 installer exited with $($install.ExitCode)" }
+          Add-Content -Path $env:GITHUB_ENV -Value "RUBY187=$dir\bin\ruby.exe"
+          & "$dir\bin\ruby.exe" -v
+      - name: Install Ruby 1.9.3
+        shell: pwsh
+        run: |
+          $installer = "$env:RUNNER_TEMP\rubyinstaller-1.9.3-p551.exe"
+          Invoke-WebRequest -Uri "https://github.com/oneclick/rubyinstaller/releases/download/ruby-1.9.3-p551/rubyinstaller-1.9.3-p551.exe" -OutFile $installer
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash -ne "D0C5CFFB7215999568C18F4221B3EC41BFC5DDD374F8B30381A353F4D97F2F30") {
+            throw "the Ruby 1.9.3 installer does not match its SHA-256"
+          }
+          $dir = "$env:RUNNER_TEMP\ruby193"
+          $install = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "the Ruby 1.9.3 installer exited with $($install.ExitCode)" }
+          Add-Content -Path $env:GITHUB_ENV -Value "RUBY193=$dir\bin\ruby.exe"
+          & "$dir\bin\ruby.exe" -v
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "2.7.8"
+      - name: Note the Ruby 2.7.8 path
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "RUBY278=$((Get-Command ruby).Source)"
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3.8"
+      - name: Note the Ruby 3.3.8 path
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "RUBY338=$((Get-Command ruby).Source)"
+      # Ruby 4 must be on PATH last: the fixtures are written with it, as in the test job.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - name: Note the version matrix
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "RUBIES=$env:RUBY187;$env:RUBY193;$env:RUBY278;$env:RUBY338;$((Get-Command ruby).Source)"
+      # The interpreters come from RUBY187, RUBY193, RUBY278, RUBY338 and RUBIES: a bad path fails the test, it does not skip it.
+      - name: Test the fixtures and the version matrix
+        env:
+          MARSHAL_REQUIRE_RUBIES: "1"
+        run: cargo test --no-fail-fast --locked --all-features --test ruby_fixtures --test ruby_matrix
+
+  wasm:
+    name: WASM tests
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - run: cargo clippy --locked -p marshal-rs-wasm --target wasm32-unknown-unknown --all-targets --all-features -- -D warnings
+      # wasm-pack exits 0 even when no test runs, so require at least one passing test.
+      - name: Node.js tests
+        shell: bash
+        run: |
+          wasm-pack test --node wasm --all-features 2>&1 | tee node.log
+          grep -Eq 'test result: ok\. [1-9][0-9]* passed' node.log
+      - name: Chrome tests
+        shell: bash
+        run: |
+          wasm-pack test --headless --chrome wasm --all-features 2>&1 | tee chrome.log
+          grep -Eq 'test result: ok\. [1-9][0-9]* passed' chrome.log
+
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [load, ser, de, bignum, builder, reader, capi]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      # The corpus is not committed; each run continues from the previous run's corpus.
+      - uses: actions/cache@v6
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Check the fuzz lockfile
+        working-directory: fuzz
+        run: cargo fetch --locked
+      - name: Seeds
+        working-directory: fuzz
+        run: cargo run --locked --example make_seeds
+      # Pull requests get a 60-second smoke run; the weekly schedule fuzzes for 60 minutes per target.
+      - name: Fuzz
+        working-directory: fuzz
+        # cargo-fuzz defaults to the musl target, which cannot build the sanitized binaries.
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=${{ github.event_name == 'schedule' && 3600 || 60 }}
+      - name: Keep crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore

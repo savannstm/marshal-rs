@@ -2,22 +2,24 @@
 
 WebAssembly bindings for [`marshal-rs`](https://github.com/savannstm/marshal-rs), a Ruby `Marshal` implementation.
 
-> **I won't be continuing to publish this package on NPM.** NPM has made their 2FA completely unbearable, and I don't want to participate in this logging-in shitshow anymore. I'm looking for the first person I meet to whom I'll pass the ownership of this package on NPM, if they're willing to maintain it. Until then, you can always [build from source](#build-from-source).
+> **I won't be continuing to publish this package on NPM.** NPM's 2FA is unbearable, and I don't want to keep up with this logging-in shitshow. I'm looking for someone to take over the package on NPM. Until then, [build from source](#build-from-source).
 
 ## Install
 
-```bash
-npm install marshal-rs-wasm
-```
+Not published to NPM, so [build it from source](#build-from-source).
 
 ## API
 
 ```ts
-function load(bytes: Uint8Array): any;
-function dump(value: any): Uint8Array;
+function load(bytes: Uint8Array): MarshalValue;
+function loadMany(bytes: Uint8Array): MarshalValue[];
+function dump(value: MarshalValue): Uint8Array;
+function dumpMany(values: MarshalValue[]): Uint8Array;
 ```
 
-`load` parses a Marshal 4.8 stream into the envelope below and throws on malformed bytes; `dump` serializes an envelope back and throws if `value` isn't shaped like one.
+`load` parses one Marshal 4.8 stream into the envelope below; `loadMany` parses a file made of several concatenated streams (an RPG Maker save is one) into an array, and `dumpMany` is its inverse. `dump` serializes an envelope back. The types (`MarshalValue`, `MarshalEnvelope`, `MarshalError`) ship in the generated `.d.ts`.
+
+Everything throws a `MarshalError`: an `Error` with a `code` (`unexpected_eof`, `invalid_header`, `invalid_tag`, `symbol_table_full`, `unknown_symbol_link`, `unknown_object_link`, `length_overflow`, `negative_length`, `trailing_data`, `empty_name`, `unsupported`, or `invalid_envelope` for something that is not an envelope) and, where there is one, the byte `offset`.
 
 ### Envelope shape
 
@@ -27,25 +29,29 @@ function dump(value: any): Uint8Array;
 { __type: "array", __class: "MyArray", __flags: ["user_class"], __value: [1, 2, 3] }
 ```
 
-- `__type` (always present): one of `bignum`, `float`, `bytes`, `str`, `symbol`, `regexp`, `array`, `hash`, `struct`, `object`, `class`, `module`.
+- `__type` (always present): one of `bignum`, `float`, `bytes`, `str`, `symbol`, `regexp`, `array`, `hash`, `struct`, `object`, `class`, `module`, `user_marshal`, `data`. The last two are `marshal_dump` / `_dump_data` wrappers: `__class` is the wrapper's class and `__value` is the envelope of the value they returned.
 - `__class` (omitted if none): the declared class/module name.
-- `__flags` (omitted if empty): any of `old_module`, `user_class`, `data`, `user_marshal`, `user_defined`.
-- `__extensions` (omitted if empty): `Module#extend`ed module names.
-- `__encoding` (`str`/`regexp` only, omitted for the default `ASCII-8BIT`): the declared encoding's name (e.g. `"UTF-8"`, `"Shift_JIS"`). Nothing is transcoded, so a `str`'s `__value` is exactly the original bytes.
-- `__value`: the kind-specific payload. A hash's is an array of `[key, value]` pairs (not a JS object - keys aren't always strings). A `str`'s is a plain JS string when its bytes validate as UTF-8 (regardless of `__encoding`), or a byte array otherwise; `dump` accepts either shape back.
+- `__flags` (omitted if empty): any of `old_module`, `user_class`, `user_defined`; an unknown flag is an error.
+- `__extensions` (omitted if empty): `Module#extend`ed module names, in stream order.
+- `__ivars` (omitted if empty): instance variables besides the encoding, an array of `[name, value]` pairs.
+- `__encoding` (`str`, `regexp` and `symbol` only; omitted for a string or regexp in the default `ASCII-8BIT`, and for a symbol whose tag is the one its bytes get anyway): the declared encoding's name (e.g. `"UTF-8"`, `"Shift_JIS"`). Nothing is transcoded, so a `str`'s `__value` is exactly the original bytes.
+- `__value`: the kind-specific payload. A hash's is an array of `[key, value]` pairs (keys aren't always strings). A `str`, `float`, `symbol` or `class`/`module` is a JS string when its bytes are valid UTF-8, otherwise a `Uint8Array`. Names (`__class`, `__extensions`, member and ivar names) follow the same rule, and so does `__encoding`. A name whose encoding tag is not the default one is `{"__name": <name>, "__encoding": <name>}` instead. A `bytes` value and a `regexp` source are always `Uint8Array`. `dump` also accepts a base64 string or a number array.
 - `__members` (struct/object only, instead of `__value`): an array of `[name, value]` pairs.
 - `__default` (hash only, when present): the hash's default value.
+
+Keys may come in any order.
 
 Object links and cycles are not preserved: shared or self-referential Ruby objects become independent copies on `load`, and `dump` always emits fresh objects.
 
 ## Usage
 
 ```ts
+import { readFile } from "node:fs/promises";
 import init, { load, dump } from "marshal-rs-wasm";
 
-await init(); // browsers & Deno
+await init(await readFile(new URL("./marshal_rs_wasm_bg.wasm", import.meta.resolve("marshal-rs-wasm"))));
 
-const bytes = new Uint8Array(await Deno.readFile("./data.rvdata2"));
+const bytes = new Uint8Array(await readFile("./data.rvdata2"));
 const value = load(bytes);
 console.log(value); // e.g. { __type: "array", __value: [1, { __type: "str", __value: "two" }] }
 

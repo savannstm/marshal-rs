@@ -7,11 +7,6 @@ edition = "2021"
 [package.metadata]
 cargo-fuzz = true
 
-[dependencies]
-libfuzzer-sys = "0.4.13"
-marshal-rs = { path = ".." }
-serde_json = "1.0.154"
-
 [workspace]
 [[bin]]
 name = "load"
@@ -40,3 +35,30 @@ path = "fuzz_targets/bignum.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "builder"
+path = "fuzz_targets/builder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "reader"
+path = "fuzz_targets/reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "capi"
+path = "fuzz_targets/capi.rs"
+test = false
+doc = false
+bench = false
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+marshal-rs = { path = "..", features = ["alloc", "std", "serde"] }
+marshal_rs_capi = { package = "marshal-rs-capi", path = "../capi", features = ["std", "capi"] }
+serde_json = "1.0.154"

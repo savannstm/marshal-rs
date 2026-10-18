@@ -3,7 +3,8 @@ name = "marshal-rs-wasm"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# `wasm-bindgen` itself needs 1.81.
+rust-version = "1.81.0"
 description.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -31,6 +32,7 @@ crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [dependencies]
+js-sys = "0.3.106"
 marshal-rs = { path = "..", default-features = false, features = [
     "alloc",
     "serde",

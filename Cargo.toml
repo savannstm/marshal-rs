@@ -17,6 +17,7 @@ exclude = [
     "/.gitattributes",
     "/.clang-format",
     "/.clang-tidy",
+    "/.github",
     "/rustfmt.toml",
     "/benches",
 ]
@@ -25,9 +26,9 @@ exclude = [
 members = ["capi", "wasm"]
 
 [workspace.package]
-version = "3.4.0"
+version = "4.0.0"
 edition = "2021"
-rust-version = "1.77.0"
+rust-version = "1.81.0"
 authors = ["savannstm <savannstm@gmail.com>"]
 description = "Blazingly fast, no_std-capable Ruby-lang Marshal implementation in Rust."
 license = "WTFPL"
@@ -50,16 +51,17 @@ serde = { version = "1.0.229", optional = true, default-features = false, featur
 thiserror = { version = "2.0.21", default-features = false }
 
 [dev-dependencies]
+ciborium = "0.2.2"
 criterion = { version = "0.8.2", default-features = false }
 serde_json = "1.0.154"
 yaml_serde = "0.10.7"
 
 [[test]]
-name = "roundtrip"
-required-features = ["alloc"]
+name = "serde"
+required-features = ["serde"]
 
 [[test]]
-name = "serde"
+name = "ruby_fixtures"
 required-features = ["serde"]
 
 [[example]]
@@ -83,3 +85,10 @@ required-features = ["alloc"]
 name = "marshal_c_compare"
 harness = false
 required-features = ["alloc"]
+
+# The `no_std` C build needs abort-on-panic, and the panic handler in capi/src/lib.rs aborts anyway.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

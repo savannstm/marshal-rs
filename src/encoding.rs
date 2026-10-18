@@ -18,7 +18,7 @@ pub const ENCODING_CUSTOM: u8 = u8::MAX;
 /// what a `Kind::Bytes` value (no `E`/`encoding` ivar at all) implicitly
 /// means.
 ///
-/// Also the zero value a fresh [`crate::arena::Node`] starts with, so an
+/// Also the zero value a fresh `Node` starts with, so an
 /// untagged `Kind::Regexp`'s encoding byte defaults to it for free.
 pub const ENCODING_ASCII_8BIT: u8 = 0;
 
@@ -157,4 +157,18 @@ const _: () = assert!(ENCODING_NAMES.len() < ENCODING_CUSTOM as usize);
 #[must_use]
 pub fn encoding_name(id: u8) -> Option<&'static [u8]> {
     ENCODING_NAMES.get(id as usize).copied()
+}
+
+/// The encoding tag a symbol gets when nothing says otherwise.
+///
+/// [`ENCODING_UTF_8`] for non-ASCII bytes that are UTF-8, and [`ENCODING_ASCII_8BIT`] - no tag at all, which is
+/// how Ruby writes an ASCII symbol and a binary one - for everything else. This is the one place bytes are checked
+/// to pick a tag; it never rejects anything.
+#[must_use]
+pub const fn default_symbol_encoding(bytes: &[u8]) -> u8 {
+    if bytes.is_ascii() || core::str::from_utf8(bytes).is_err() {
+        ENCODING_ASCII_8BIT
+    } else {
+        ENCODING_UTF_8
+    }
 }

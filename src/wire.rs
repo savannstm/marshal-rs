@@ -1,18 +1,10 @@
-//! Marshal wire-format constants: type tags and the packed-integer codec.
-//!
-//! This module is `no_std` and allocation-free - it operates purely on byte
-//! slices and fixed-size stack buffers, so it forms the base of the `core`
-//! tier that can be embedded in freestanding C/C++ code.
+//! Marshal wire-format constants and the packed-integer codec. `no_std` and allocation-free.
 
 /// Marshal format version this crate reads and writes (4.8).
 pub const MAJOR_VERSION: u8 = 4;
 pub const MINOR_VERSION: u8 = 8;
 
-/// A validated Marshal wire-format type tag.
-///
-/// Constructed only via [`Tag::from_byte`], so a `Tag` value is always one of
-/// the 25 bytes Ruby's Marshal format defines - unlike v2, which
-/// `transmute`d an arbitrary input byte into an enum with unrelated variants.
+/// A Marshal type tag. Built only via [`Tag::from_byte`], so it is always one of the defined bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum Tag {
@@ -95,12 +87,7 @@ pub const REGEXP_IGNORE_CASE: u8 = 1 << 0;
 pub const REGEXP_EXTENDED: u8 = 1 << 1;
 pub const REGEXP_MULTILINE: u8 = 1 << 2;
 
-/// Decode a Marshal packed integer given its already-consumed leading byte
-/// and up to 4 immediately-following bytes (`tail`).
-///
-/// `tail` must contain at least as many bytes as the leading byte demands -
-/// callers are expected to have already bounds-checked via
-/// [`packed_int_tail_len`].
+/// Decodes a packed integer from its leading byte and `tail`. Callers must size `tail` via [`packed_int_tail_len`].
 #[allow(clippy::cast_sign_loss)]
 #[inline]
 #[must_use]
@@ -129,8 +116,7 @@ pub fn decode_int(lead: i8, tail: &[u8]) -> i32 {
     }
 }
 
-/// Number of extra bytes [`decode_int`] needs beyond the leading byte, given
-/// that leading byte.
+/// Extra bytes [`decode_int`] needs after `lead`.
 #[allow(clippy::cast_sign_loss)]
 #[inline]
 #[must_use]

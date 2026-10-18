@@ -1,6 +1,6 @@
 #![allow(clippy::cast_possible_wrap)]
 
-use marshal_rs::wire::{Tag, decode_int, encode_int, packed_int_tail_len};
+use marshal_rs::wire::{MAJOR_VERSION, MINOR_VERSION, Tag, decode_int, encode_int, packed_int_tail_len};
 
 fn roundtrip(value: i32) {
     let mut buf = [0u8; 5];
@@ -36,7 +36,31 @@ fn packed_int_roundtrip() {
 }
 
 #[test]
+fn packed_int_roundtrip_is_dense_around_the_byte_boundaries() {
+    for value in -70_000..=70_000 {
+        roundtrip(value);
+    }
+}
+
+#[test]
 fn tag_from_byte_rejects_unknown() {
     assert!(Tag::from_byte(b'!').is_none());
     assert_eq!(Tag::from_byte(b'0'), Some(Tag::Nil));
+}
+
+#[test]
+fn every_defined_tag_byte_maps_back_to_itself() {
+    let mut defined = 0;
+    for byte in 0..=u8::MAX {
+        if let Some(tag) = Tag::from_byte(byte) {
+            assert_eq!(tag.byte(), byte);
+            defined += 1;
+        }
+    }
+    assert_eq!(defined, 25);
+}
+
+#[test]
+fn format_version_is_4_8() {
+    assert_eq!((MAJOR_VERSION, MINOR_VERSION), (4, 8));
 }

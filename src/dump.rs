@@ -1,8 +1,6 @@
 //! Writes an [`Arena`] back to a Marshal byte stream.
 //!
-//! Traversal is iterative, over an explicit work stack: an [`Arena`] loaded from
-//! hostile bytes can be as deep as the input is long (two bytes an array level),
-//! so recursing here would let a 200 KB file overflow the call stack.
+//! Traversal uses an explicit work stack: a hostile input can nest as deep as its length, so recursion would overflow.
 
 use crate::{
     arena::{Arena, Flags, Kind, SymId, ValueId},
@@ -10,23 +8,18 @@ use crate::{
 };
 use alloc::vec::Vec;
 
-/// Serializes `arena` back to Marshal bytes.
-///
-/// Infallible: every value in an [`Arena`] was constructed through
-/// [`crate::load::load`] or the [`Arena`] builder API, both of which only
-/// ever produce internally consistent nodes, and the `Vec<u8>` sink cannot
-/// fail to grow.
+/// Serializes `arena` back to Marshal bytes. Infallible: the builder rejects ids that are not nodes of the arena.
 #[must_use]
 pub fn dump(arena: &Arena<'_>) -> Vec<u8> {
     let mut dumper = Dumper {
-        writer: Writer::new(Vec::with_capacity(1024)),
+        writer: Writer::new(Vec::with_capacity(arena.nodes.len() * 8 + 64)),
         arena,
         sym_link: alloc::vec![u32::MAX; arena.symbols.len()],
         obj_link: alloc::vec![u32::MAX; arena.nodes.len()],
         next_sym: 0,
         next_obj: 0,
-        e_symbol_link: u32::MAX,
-        encoding_symbol_link: u32::MAX,
+        fixed_symbol_links: [u32::MAX; 2],
+        encoding_names: Vec::new(),
         work: Vec::new(),
     };
     let _: Result<(), core::convert::Infallible> = dumper.writer.write_header();
@@ -41,8 +34,10 @@ struct Dumper<'r, 'a> {
     obj_link: Vec<u32>,
     next_sym: u32,
     next_obj: u32,
-    e_symbol_link: u32,
-    encoding_symbol_link: u32,
+    /// Table index of the `E` and `encoding` symbols once written; see [`Dumper::write_fixed_symbol`].
+    fixed_symbol_links: [u32; 2],
+    /// The encoding names written so far and the object index of their string, so a repeat is a link.
+    encoding_names: Vec<(&'r [u8], u32)>,
     work: Vec<Work>,
 }
 
@@ -53,21 +48,36 @@ enum Work {
     /// An object/struct member name, which precedes that member's value.
     MemberName(SymId),
     /// The ivar pair that follows a string's or regexp's whole body.
-    TrailingEncoding { encoding_id: u8, target: ValueId },
+    TrailingIvars {
+        encoding_id: Option<u8>,
+        target: ValueId,
+    },
+    /// Gives a `_dump` value its place in the object numbering, once its instance variables are written.
+    Number(ValueId),
 }
 
-impl Dumper<'_, '_> {
+impl<'r> Dumper<'r, '_> {
+    /// The `obj_link` of a value being written that has no number yet.
+    const UNFINISHED: u32 = u32::MAX - 1;
+
     fn write_value(&mut self, root: ValueId) {
         self.work.push(Work::Value(root));
         while let Some(item) = self.work.pop() {
             match item {
                 Work::Value(id) => self.write_node(id),
-                Work::MemberName(sym) => self.write_member_name(sym),
-                Work::TrailingEncoding { encoding_id, target } => {
-                    self.write_trailing_encoding_ivar(encoding_id, target);
+                Work::MemberName(sym) => self.write_symbol_ref(sym),
+                Work::TrailingIvars { encoding_id, target } => {
+                    self.write_trailing_ivars(encoding_id, target);
                 }
+                Work::Number(id) => self.number(id),
             }
         }
+    }
+
+    /// Gives `id` the next object number.
+    fn number(&mut self, id: ValueId) {
+        self.obj_link[id as usize] = self.next_obj;
+        self.next_obj += 1;
     }
 
     fn write_symbol_ref(&mut self, sym: SymId) {
@@ -79,82 +89,65 @@ impl Dumper<'_, '_> {
         let idx = self.next_sym;
         self.next_sym += 1;
         *slot = idx;
-        let _ = self.writer.write_symbol_new(self.arena.symbol_bytes(sym));
+        let arena = self.arena;
+        let bytes = arena.symbol_bytes(sym);
+        // A symbol's encoding is written as a `TYPE_IVAR` wrapper, or bare when it has none.
+        let encoding = arena.symbol_encoding(sym);
+        let tagged = encoding != crate::encoding::ENCODING_ASCII_8BIT;
+        if tagged {
+            let _ = self.writer.write_ivar_wrap_tag();
+        }
+        let _ = self.writer.write_symbol_new(bytes);
+        if tagged {
+            let _ = self.writer.write_len(1);
+            self.write_encoding_ivar(encoding, arena.symbol_custom_encoding(sym));
+        }
     }
 
-    /// Writes one member/ivar-name symbol without the "already written?"
-    /// dedup fast path short-circuiting into a link for the *first* use -
-    /// identical to `write_symbol_ref`, kept as a separate name at call
-    /// sites for readability (member names are always fresh-or-linked
-    /// symbols, never a general value).
-    fn write_member_name(&mut self, sym: SymId) {
-        self.write_symbol_ref(sym);
-    }
-
-    // One long exhaustive match over every `Kind`/wrapper-flag combination -
-    // splitting it up would just scatter one linear dispatch across several
-    // functions, not make it clearer. The `node.a`/`node.b as _` casts are
-    // bit-preserving reinterprets of a `Node`'s packed payload (a fixnum's
-    // bits, a `Str`/`Regexp`'s one-byte encoding id, a `Regexp`'s option
-    // byte) - not range-narrowing.
-    #[allow(
-        clippy::too_many_lines,
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap
-    )]
+    // One exhaustive match is clearer than splitting it. The `as _` casts on `node.a`/`node.b` reinterpret
+    // packed payload bits (fixnum bits, encoding and option bytes); they do not narrow ranges.
+    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn write_node(&mut self, id: ValueId) {
         let node = *self.arena.node(id);
 
-        match node.kind {
-            Kind::Nil => {
-                let _ = self.writer.write_nil();
-                return;
-            }
-            Kind::True => {
-                let _ = self.writer.write_bool(true);
-                return;
-            }
-            Kind::False => {
-                let _ = self.writer.write_bool(false);
-                return;
-            }
-            Kind::Fixnum => {
-                let _ = self.writer.write_fixnum(node.a as i32);
-                return;
-            }
-            Kind::Symbol => {
-                self.write_symbol_ref(node.a);
-                return;
-            }
-            _ => {}
+        // A wrapper node is `Kind::Nil` with a flag; its real content is its body node.
+        let wrapped = node.flags.intersects(Flags::WRAPPER);
+        if !wrapped
+            && matches!(
+                node.kind,
+                Kind::Nil | Kind::True | Kind::False | Kind::Fixnum | Kind::Symbol
+            )
+        {
+            self.write_scalar(node.kind, node.a);
+            return;
         }
 
         let slot = &mut self.obj_link[id as usize];
+        if *slot == Self::UNFINISHED {
+            // A `_dump` value inside its own instance variables: Ruby has no stream for that either (it numbers the
+            // value only after them, so there is nothing to link to yet).
+            let _ = self.writer.write_nil();
+            return;
+        }
         if *slot != u32::MAX {
             let _ = self.writer.write_object_link(*slot);
             return;
         }
-        let idx = self.next_obj;
-        self.next_obj += 1;
-        *slot = idx;
+        // Ruby numbers a value before its contents, except `_dump` values (after class name and ivars)
+        // and `marshal_dump`/`_dump_data` wrappers (after class name).
+        if wrapped || node.flags.contains(Flags::USER_DEFINED) {
+            *slot = Self::UNFINISHED;
+        }
 
-        // `TYPE_IVAR` is the OUTERMOST wrapper when present - it wraps the
-        // entire extended/uclass/data/... construct, not just the bare
-        // string - and its ivar pairs trail after everything else, so both
-        // the tag and the trailing pair are handled here rather than inside
-        // the `Kind::Str`/`Kind::Regexp` arms below. A declared encoding of
-        // `ASCII-8BIT` needs no ivar at all - matching Ruby, which only
-        // ever writes `E`/`encoding` for a *non-default* encoding - so a
-        // `Kind::Str` node built with that id (only reachable through the
-        // builder API; the loader never produces it, since Ruby never
-        // writes the ivar for it) dumps identically to plain `Bytes`.
+        // `TYPE_IVAR` is the outermost wrapper, so its tag and trailing pairs are handled here. An
+        // `ASCII-8BIT` string needs no ivar (Ruby only writes one for a non-default encoding).
         let encoding_id = match node.kind {
             Kind::Str => Some(node.b as u8),
             Kind::Regexp => Some((node.b >> 8) as u8),
             _ => None,
         }
         .filter(|&id| id != crate::encoding::ENCODING_ASCII_8BIT);
-        let needs_ivar_wrap = encoding_id.is_some();
+        let needs_ivar_wrap = encoding_id.is_some() || !self.arena.extra_ivars_of(id).is_empty();
         if needs_ivar_wrap {
             let _ = self.writer.write_ivar_wrap_tag();
         }
@@ -164,34 +157,61 @@ impl Dumper<'_, '_> {
             self.write_symbol_ref(module);
         }
 
+        if wrapped {
+            let tag = if node.flags.contains(Flags::DATA) {
+                crate::wire::Tag::Data
+            } else {
+                crate::wire::Tag::UserMarshal
+            };
+            self.write_class_name_tag(tag, node.class);
+            self.number(id);
+            if needs_ivar_wrap {
+                self.work.push(Work::TrailingIvars {
+                    encoding_id,
+                    target: id,
+                });
+            }
+            // SAFETY of the unwrap: every node carrying a wrapper flag was created together with its
+            // `wrappers` entry, by `push_wrapper` or by the loader's `DecorateWrap`.
+            let body = self.arena.body_of(id).expect("a wrapper node has a body");
+            self.work.push(Work::Value(body));
+            return;
+        }
+
         let mut class_written = false;
-        if node.flags.contains(Flags::DATA) {
-            let _ = self.writer.write_tag(crate::wire::Tag::Data);
-            self.write_symbol_ref(node.class);
-            class_written = true;
-        } else if node.flags.contains(Flags::USER_CLASS) {
+        if node.flags.contains(Flags::USER_CLASS) {
             let _ = self.writer.write_uclass_tag();
             self.write_symbol_ref(node.class);
             class_written = true;
         } else if node.flags.contains(Flags::USER_DEFINED) {
             self.write_class_name_tag(crate::wire::Tag::UserDef, node.class);
             let _ = self.writer.write_chunk(self.arena.blob(node.a));
-            if let Some(encoding_id) = encoding_id {
-                self.write_trailing_encoding_ivar(encoding_id, id);
+            if needs_ivar_wrap {
+                self.work.push(Work::Number(id));
+                self.work.push(Work::TrailingIvars {
+                    encoding_id,
+                    target: id,
+                });
+            } else {
+                self.number(id);
             }
             return;
-        } else if node.flags.contains(Flags::USER_MARSHAL) {
-            self.write_class_name_tag(crate::wire::Tag::UserMarshal, node.class);
-            class_written = true;
         }
 
+        // Everything else is numbered after the markers above (the names of an `extend`ed module and of a subclass
+        // are written before it, and an encoding name there is an object too) and before its own class name.
+        self.number(id);
+
         // Pushed before the children so it's popped after them: it trails the value's whole body.
-        if let Some(encoding_id) = encoding_id {
-            self.work.push(Work::TrailingEncoding { encoding_id, target: id });
+        if needs_ivar_wrap {
+            self.work.push(Work::TrailingIvars {
+                encoding_id,
+                target: id,
+            });
         }
 
         match node.kind {
-            Kind::Nil | Kind::True | Kind::False | Kind::Fixnum | Kind::Symbol => unreachable!(),
+            Kind::Nil | Kind::True | Kind::False | Kind::Fixnum | Kind::Symbol => unreachable!("written above"),
 
             Kind::Bignum => {
                 let magnitude = self.arena.blob(node.a);
@@ -204,10 +224,7 @@ impl Dumper<'_, '_> {
                 let _ = self.writer.write_float(self.arena.blob(node.a));
             }
 
-            // `Str`'s bytes are exactly what was declared, untouched (see
-            // `Kind::Str`'s doc comment); the wire shape is identical to
-            // `Bytes` (a bare `"` + chunk) - only the outer ivar-wrap above
-            // (and the trailing pair below) differ.
+            // Same wire shape as `Bytes`; only the outer ivar wrap and trailing pair differ.
             Kind::Bytes | Kind::Str => {
                 let _ = self.writer.write_string_bytes(self.arena.blob(node.a));
             }
@@ -273,6 +290,18 @@ impl Dumper<'_, '_> {
         }
     }
 
+    fn write_scalar(&mut self, kind: Kind, payload: u32) {
+        match kind {
+            Kind::Nil => drop(self.writer.write_nil()),
+            Kind::True => drop(self.writer.write_bool(true)),
+            Kind::False => drop(self.writer.write_bool(false)),
+            #[allow(clippy::cast_possible_wrap)]
+            Kind::Fixnum => drop(self.writer.write_fixnum(payload as i32)),
+            Kind::Symbol => self.write_symbol_ref(payload),
+            _ => unreachable!("not a scalar kind"),
+        }
+    }
+
     /// Queues `len` members starting at `start`, each as its name and then its value.
     fn push_members(&mut self, start: u32, len: u32) {
         for i in (0..len).rev() {
@@ -287,14 +316,34 @@ impl Dumper<'_, '_> {
         self.write_symbol_ref(class);
     }
 
-    /// Writes the single trailing ivar pair that follows an outer
-    /// `TYPE_IVAR` wrap for a `Kind::Str`/encoding-tagged `Kind::Regexp`
-    /// value - `:E => true`/`:E => false` for UTF-8/US-ASCII (Ruby's own
-    /// shorthand for the two most common encodings), `:encoding => "<name>"`
-    /// for everything else. `target` is the wrapped value's own id, needed
-    /// to look up a [`crate::encoding::ENCODING_CUSTOM`] name.
+    /// Writes the ivar count and pairs that follow an outer `TYPE_IVAR` wrap: the encoding pair, if
+    /// any, then the value's other instance variables (their names and values are queued).
+    #[allow(clippy::cast_possible_truncation)] // the count is at most the number of nodes
+    fn write_trailing_ivars(&mut self, encoding_id: Option<u8>, target: ValueId) {
+        let extras = self.arena.extra_ivars_of(target);
+        let _ = self
+            .writer
+            .write_len(usize::from(encoding_id.is_some()) as u32 + extras.len() as u32);
+        if let Some(encoding_id) = encoding_id {
+            self.write_trailing_encoding_ivar(encoding_id, target);
+        }
+        for &(_, name, value) in extras.iter().rev() {
+            self.work.push(Work::Value(value));
+            self.work.push(Work::MemberName(name));
+        }
+    }
+
+    /// Writes the single trailing ivar pair that follows an outer `TYPE_IVAR` wrap for a
+    /// `Kind::Str`/encoding-tagged `Kind::Regexp` value. `target` is the wrapped value's own id, needed to look
+    /// up a [`crate::encoding::ENCODING_CUSTOM`] name.
     fn write_trailing_encoding_ivar(&mut self, encoding_id: u8, target: ValueId) {
-        let _ = self.writer.write_len(1);
+        let arena = self.arena;
+        self.write_encoding_ivar(encoding_id, arena.custom_encoding_of(target));
+    }
+
+    /// The encoding pair of a string, regexp or symbol: `:E => true/false` for UTF-8/US-ASCII, otherwise
+    /// `:encoding => "<name>"`. The name is written once per stream and linked afterwards.
+    fn write_encoding_ivar(&mut self, encoding_id: u8, custom: Option<&'r [u8]>) {
         match encoding_id {
             crate::encoding::ENCODING_UTF_8 => {
                 self.write_symbol_of_e();
@@ -307,43 +356,46 @@ impl Dumper<'_, '_> {
             id => {
                 self.write_symbol_of_encoding();
                 let name = if id == crate::encoding::ENCODING_CUSTOM {
-                    self.arena.custom_encoding_of(target).unwrap_or(b"")
+                    custom.unwrap_or(b"")
                 } else {
                     crate::encoding::encoding_name(id).unwrap_or(b"")
                 };
-                let _ = self.writer.write_string_bytes(name);
+                if let Some(&(_, index)) = self.encoding_names.iter().find(|&&(known, _)| known == name) {
+                    let _ = self.writer.write_object_link(index);
+                } else {
+                    self.encoding_names.push((name, self.next_obj));
+                    // A stream that links to this name string as an object (nothing Ruby writes does) gets the link back.
+                    if let Some(node) = self
+                        .arena
+                        .name_node(name)
+                        .filter(|&node| self.obj_link[node as usize] == u32::MAX)
+                    {
+                        self.obj_link[node as usize] = self.next_obj;
+                    }
+                    self.next_obj += 1;
+                    let _ = self.writer.write_string_bytes(name);
+                }
             }
         }
     }
 
-    /// Writes a fixed ASCII symbol (`"E"`) that isn't backed by a `SymId` in
-    /// the arena - it's synthesized here, not read from the source stream -
-    /// so it always goes through the fresh-symbol path (and joins the
-    /// regular dedup table for the rest of this dump).
-    fn write_symbol_of_e(&mut self) {
-        // Not a real `SymId` lookup: this literal is short-lived enough
-        // that deduping it against the arena's own table isn't worth a
-        // dynamic intern call mid-dump. The first dumped `:E` writes it
-        // fresh and links to that occurrence afterward via a tiny local
-        // cache.
-        if self.e_symbol_link == u32::MAX {
-            self.e_symbol_link = self.next_sym;
+    /// Writes a fixed ASCII symbol (`E`, `encoding`) that has no `SymId` in the arena; it is synthesized
+    /// here, not read from the source. The first use writes it fresh, later ones link to it via a small local cache.
+    fn write_fixed_symbol(&mut self, slot: usize, name: &[u8]) {
+        if self.fixed_symbol_links[slot] == u32::MAX {
+            self.fixed_symbol_links[slot] = self.next_sym;
             self.next_sym += 1;
-            let _ = self.writer.write_symbol_new(b"E");
+            let _ = self.writer.write_symbol_new(name);
         } else {
-            let _ = self.writer.write_symbol_link(self.e_symbol_link);
+            let _ = self.writer.write_symbol_link(self.fixed_symbol_links[slot]);
         }
     }
 
-    /// Same idea as [`Dumper::write_symbol_of_e`], for the `"encoding"`
-    /// symbol.
+    fn write_symbol_of_e(&mut self) {
+        self.write_fixed_symbol(0, b"E");
+    }
+
     fn write_symbol_of_encoding(&mut self) {
-        if self.encoding_symbol_link == u32::MAX {
-            self.encoding_symbol_link = self.next_sym;
-            self.next_sym += 1;
-            let _ = self.writer.write_symbol_new(b"encoding");
-        } else {
-            let _ = self.writer.write_symbol_link(self.encoding_symbol_link);
-        }
+        self.write_fixed_symbol(1, b"encoding");
     }
 }

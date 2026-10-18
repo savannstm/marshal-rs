@@ -1,3 +1,5 @@
+#![cfg(feature = "alloc")]
+
 use marshal_rs::bignum::*;
 
 #[test]

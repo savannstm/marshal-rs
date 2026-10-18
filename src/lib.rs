@@ -25,9 +25,11 @@ pub mod load;
 pub mod value;
 
 #[cfg(feature = "serde")]
+mod base64;
+#[cfg(feature = "serde")]
 pub mod ser;
 
-pub use reader::{FixedSymbolTable, ReadError, Reader, Span, SymbolTable, Token};
+pub use reader::{FixedSymbolTable, ReadError, Reader, Span, SymbolEncoding, SymbolTable, Token};
 pub use wire::Tag;
 pub use writer::{Sink, WriteError, Writer};
 
@@ -37,7 +39,8 @@ pub use arena::{Arena, Flags, Kind, SymId, ValueId};
 pub use dump::dump;
 #[cfg(feature = "alloc")]
 pub use encoding::{
-    ENCODING_ASCII_8BIT, ENCODING_CUSTOM, ENCODING_US_ASCII, ENCODING_UTF_8, encoding_id, encoding_name,
+    ENCODING_ASCII_8BIT, ENCODING_CUSTOM, ENCODING_US_ASCII, ENCODING_UTF_8, default_symbol_encoding, encoding_id,
+    encoding_name,
 };
 #[cfg(feature = "alloc")]
 pub use load::{load, load_many};

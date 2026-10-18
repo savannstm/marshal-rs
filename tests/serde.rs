@@ -1,112 +1,31 @@
-//! Streaming serde round-trip: Marshal bytes -> `Arena` -> JSON -> `Arena` ->
-//! Marshal bytes.
+//! The serde envelope, from the JSON side: text a person or another tool wrote, and values built by hand.
+//! Everything that starts from Marshal bytes Ruby wrote is in `ruby_fixtures.rs`.
 
 use marshal_rs::{Arena, ValueRef, dump, load};
 
-fn roundtrip_via_json(bytes: &[u8]) -> Vec<u8> {
-    let arena = load(bytes).expect("should load");
-    let json = serde_json::to_string(&arena).expect("should serialize");
-    let arena2: Arena<'static> = serde_json::from_str(&json).expect("should deserialize");
-    dump(&arena2)
+fn from_json(json: &str) -> Result<Arena<'static>, serde_json::Error> {
+    serde_json::from_str(json)
 }
 
 #[test]
 fn trivial_values_are_bare_json() {
-    let arena = load(b"\x04\x080").unwrap();
-    assert_eq!(serde_json::to_string(&arena).unwrap(), "null");
-
-    let arena = load(b"\x04\x08T").unwrap();
-    assert_eq!(serde_json::to_string(&arena).unwrap(), "true");
-
-    let arena = load(b"\x04\x08i\x0A").unwrap();
-    assert_eq!(serde_json::to_string(&arena).unwrap(), "5");
+    let mut arena = Arena::builder();
+    let array = arena.push_array(&[]).unwrap();
+    let nil = arena.push_nil();
+    let yes = arena.push_bool(true);
+    let five = arena.push_fixnum(5);
+    for (id, json) in [(nil, "null"), (yes, "true"), (five, "5")] {
+        arena.set_root(id);
+        assert_eq!(serde_json::to_string(&arena).unwrap(), json);
+    }
+    arena.set_root(array);
+    assert_eq!(
+        serde_json::to_string(&arena).unwrap(),
+        r#"{"__type":"array","__value":[]}"#
+    );
 }
 
-#[test]
-fn nil_roundtrips() {
-    assert_eq!(roundtrip_via_json(b"\x04\x080"), b"\x04\x080");
-}
-
-#[test]
-fn string_roundtrips() {
-    let bytes: &[u8] = b"\x04\x08I\"\x11Short string\x06:\x06ET";
-    assert_eq!(roundtrip_via_json(bytes), bytes);
-}
-
-#[test]
-fn array_roundtrips() {
-    let bytes: &[u8] = b"\x04\x08[\x0ai\x06I\"\x08two\x06:\x06ETf\x063[\x06i\x09{\x06i\x0ai\x0b";
-    assert_eq!(roundtrip_via_json(bytes), bytes);
-}
-
-#[test]
-fn hash_with_default_roundtrips() {
-    let bytes: &[u8] = b"\x04\x08}\0I\"\x0cdefault\x06:\x06ET";
-    assert_eq!(roundtrip_via_json(bytes), bytes);
-}
-
-#[test]
-fn object_roundtrips() {
-    let bytes: &[u8] = b"\x04\x08o:\x11CustomObject\x06:\x0a@dataI\"\x10object data\x06:\x06ET";
-    let arena = load(bytes).unwrap();
-    let json = serde_json::to_string(&arena).unwrap();
-    assert!(json.contains("\"__type\":\"object\""));
-    assert!(json.contains("\"CustomObject\""));
-
-    let arena2: Arena<'static> = serde_json::from_str(&json).unwrap();
-    let v = ValueRef::root(&arena2);
-    assert_eq!(v.class_name(), Some(&b"CustomObject"[..]));
-    assert_eq!(v.get("@data").unwrap().as_str(), Some("object data"));
-    assert_eq!(dump(&arena2), bytes);
-}
-
-#[test]
-fn user_class_array_roundtrips() {
-    let bytes: &[u8] = b"\x04\x08C:\x0cMyArray[\x08i\x06i\x07i\x08";
-    assert_eq!(roundtrip_via_json(bytes), bytes);
-}
-
-#[test]
-fn bignum_roundtrips() {
-    let bytes: &[u8] = b"\x04\x08l+\n\0\0\0\0\0\0\0\0\x02\0";
-    assert_eq!(roundtrip_via_json(bytes), bytes);
-}
-
-/// A non-UTF-8-tagged string can't survive a JSON round-trip as plain text
-/// (JSON strings must be UTF-8), so its `__value` falls back to a byte
-/// array - and `__encoding` is what lets the exact original encoding name
-/// (not just "not UTF-8") come back on the other side.
-#[test]
-fn non_utf8_string_roundtrips() {
-    // GBK-encoded "\xba\xba\xd7\xd6\xc4\xda" -> "汉字内".
-    let bytes: &[u8] = b"\x04\x08I\"\x0b\xBA\xBA\xD7\xD6\xC4\xDA\x06:\rencoding\"\x08GBK";
-    let arena = load(bytes).unwrap();
-    let json = serde_json::to_string(&arena).unwrap();
-    assert!(json.contains("\"__encoding\":\"GBK\""));
-    // Not a JSON string (the bytes don't validate as UTF-8) - a byte array.
-    assert!(json.contains("\"__value\":[186,186,215,214,196,218]"));
-
-    let arena2: Arena<'static> = serde_json::from_str(&json).unwrap();
-    let v = ValueRef::root(&arena2);
-    assert_eq!(v.as_bytes(), Some(&b"\xBA\xBA\xD7\xD6\xC4\xDA"[..]));
-    assert_eq!(v.encoding_name(), Some(&b"GBK"[..]));
-    assert_eq!(dump(&arena2), bytes);
-}
-
-#[test]
-fn regexp_with_encoding_roundtrips() {
-    let bytes: &[u8] = b"\x04\x08I/\x0caboba.*\x03\x06:\x06EF";
-    let arena = load(bytes).unwrap();
-    let json = serde_json::to_string(&arena).unwrap();
-    assert!(json.contains("\"__encoding\":\"US-ASCII\""));
-
-    let arena2: Arena<'static> = serde_json::from_str(&json).unwrap();
-    assert_eq!(ValueRef::root(&arena2).encoding_name(), Some(&b"US-ASCII"[..]));
-    assert_eq!(dump(&arena2), bytes);
-}
-
-/// An encoding name outside the fixed table still round-trips through the
-/// arena's custom-encoding side table.
+/// An encoding name outside the fixed table still round-trips through the arena's custom-encoding side table.
 #[test]
 fn custom_encoding_name_roundtrips() {
     let mut arena = Arena::builder();
@@ -116,8 +35,129 @@ fn custom_encoding_name_roundtrips() {
     let json = serde_json::to_string(&arena).unwrap();
     assert!(json.contains("\"__encoding\":\"MyWeirdEncoding\""));
 
-    let arena2: Arena<'static> = serde_json::from_str(&json).unwrap();
+    let arena2 = from_json(&json).unwrap();
     let v = ValueRef::root(&arena2);
     assert_eq!(v.as_bytes(), Some(&b"hello"[..]));
     assert_eq!(v.encoding_name(), Some(&b"MyWeirdEncoding"[..]));
+}
+
+#[test]
+fn binary_payloads_are_base64_in_json() {
+    // Lengths 0..=4 cover every padding case.
+    for len in 0..=4u8 {
+        let payload: Vec<u8> = (0..len).map(|i| 0xf0 + i).collect();
+        let mut arena = Arena::builder();
+        let id = arena.push_bytes(payload.clone());
+        arena.set_root(id);
+        let json = serde_json::to_string(&arena).unwrap();
+        assert!(json.contains("\"__value\":\""), "{json}");
+        let back = from_json(&json).unwrap();
+        assert_eq!(ValueRef::root(&back).as_bytes(), Some(&payload[..]));
+    }
+}
+
+#[test]
+fn legacy_byte_arrays_and_bad_base64_are_handled() {
+    let old = from_json(r#"{"__type":"bytes","__value":[1,2,3]}"#).unwrap();
+    assert_eq!(ValueRef::root(&old).as_bytes(), Some(&[1u8, 2, 3][..]));
+    assert!(from_json(r#"{"__type":"bytes","__value":"AQI"}"#).is_err());
+    assert!(from_json(r#"{"__type":"bytes","__value":"A===" }"#).is_err());
+}
+
+#[test]
+fn envelope_keys_may_come_in_any_order() {
+    // As a tool that sorts object keys writes it: `__type` is last, in the outer value and the inner ones.
+    let sorted = r#"{"__class":"Pair","__members":[["@a",{"__value":"x","__type":"symbol"}],["@b",{"__value":"AQI=","__type":"bytes"}]],"__type":"object"}"#;
+    let arena = from_json(sorted).unwrap();
+    let root = ValueRef::root(&arena);
+    assert_eq!(root.class_name(), Some(&b"Pair"[..]));
+    assert_eq!(root.get("a").and_then(|v| v.as_symbol_bytes()), Some(&b"x"[..]));
+    assert_eq!(root.get("b").and_then(|v| v.as_bytes()), Some(&[1u8, 2][..]));
+
+    let in_order = r#"{"__type":"object","__class":"Pair","__members":[["@a",{"__type":"symbol","__value":"x"}],["@b",{"__type":"bytes","__value":"AQI="}]]}"#;
+    let reference = from_json(in_order).unwrap();
+    assert_eq!(dump(&arena), dump(&reference));
+}
+
+#[test]
+fn envelope_without_a_type_is_an_error() {
+    assert!(from_json(r#"{"__value":[1]}"#).is_err());
+    assert!(from_json("{}").is_err());
+}
+
+#[test]
+fn json_that_would_dump_to_an_invalid_stream_is_rejected() {
+    for json in [
+        r#"{"__type":"object","__class":"","__members":[]}"#,
+        r#"{"__type":"class","__value":""}"#,
+        r#"{"__type":"object","__class":"Foo","__members":[],"__flags":["user_class"]}"#,
+        r#"{"__type":"class","__value":"Foo","__flags":["user_class"],"__class":"Bar"}"#,
+        r#"{"__type":"array","__value":[],"__flags":["data"]}"#,
+        r#"{"__type":"bytes","__value":"AQI=","__extensions":["M"],"__ivars":[["",0]]}"#,
+        r#"{"__type":"symbol","__value":"a","__extensions":["M"]}"#,
+        r#"{"__type":"str","__value":"x","__encoding":"UTF-8","__flags":["user_class","user_defined"],"__class":"A"}"#,
+    ] {
+        assert!(from_json(json).is_err(), "{json}");
+    }
+}
+
+#[test]
+fn base64_must_be_padded_and_clean() {
+    let decode = |text: &str| {
+        let json = format!(r#"{{"__type":"bytes","__value":"{text}"}}"#);
+        from_json(&json)
+            .ok()
+            .and_then(|arena| ValueRef::root(&arena).as_bytes().map(<[u8]>::to_vec))
+    };
+    assert_eq!(decode(""), Some(vec![]));
+    assert_eq!(decode("AQID"), Some(vec![1, 2, 3]));
+    assert_eq!(decode("AQI="), Some(vec![1, 2]));
+    assert_eq!(decode("AQ=="), Some(vec![1]));
+    assert_eq!(decode("AQI"), None);
+    assert_eq!(decode("AQ I="), None);
+    assert_eq!(decode("AQ=A"), None);
+    assert_eq!(decode("A==="), None);
+    assert_eq!(decode("=QID"), None);
+    assert_eq!(decode("AQID\n"), None);
+}
+
+/// Names and text that are not UTF-8 are written as `{"__base64": ...}` / base64 text and read back exactly;
+/// nothing is validated or replaced.
+#[test]
+fn names_that_are_not_utf8_come_back_exactly() {
+    let mut arena = Arena::builder();
+    let name = vec![0xff, 0xfe, 0x83, 0x41];
+    let symbol = arena.push_symbol(name.clone());
+    let float = arena.push_float(b"1.5\0\xff\xfe".to_vec());
+    let object = arena
+        .push_object(name.clone(), &[(name.clone(), symbol), (b"@plain".to_vec(), float)])
+        .unwrap();
+    arena.set_root(object);
+
+    let json = serde_json::to_string(&arena).unwrap();
+    assert!(json.contains(r#""__class":{"__base64":"#), "{json}");
+    assert!(json.contains(r#""__base64":true"#), "{json}");
+    assert!(json.contains(r#"["@plain","#), "{json}");
+    let back = from_json(&json).unwrap();
+    assert_eq!(dump(&back), dump(&arena));
+
+    // A name object holds exactly one key, and valid base64.
+    assert!(from_json(r#"{"__type":"object","__class":{"__base64":"AQI=","x":1},"__members":[]}"#).is_err());
+    assert!(from_json(r#"{"__type":"object","__class":{"__base64":"AQI"},"__members":[]}"#).is_err());
+}
+
+/// A class name Ruby wrote without an encoding stays untagged through JSON; a name built with one keeps it.
+#[test]
+fn class_name_tags_survive_json() {
+    // `Café`, no encoding ivar.
+    let plain = b"\x04\x08c\x0a\x43\x61\x66\xc3\xa9";
+    let loaded = load(plain).unwrap();
+    let back = from_json(&serde_json::to_string(&loaded).unwrap()).unwrap();
+    assert_eq!(dump(&back), plain);
+
+    let mut built = Arena::builder();
+    let class = built.push_class("Café".as_bytes().to_vec()).unwrap();
+    assert!(built.set_root(class));
+    let back = from_json(&serde_json::to_string(&built).unwrap()).unwrap();
+    assert_eq!(dump(&back), dump(&built));
 }

@@ -20,6 +20,8 @@ fn walk(arena: &Arena<'_>) -> usize {
         stack.extend(value.array().map(|child| child.id()));
         stack.extend(value.entries().flat_map(|(key, value)| [key.id(), value.id()]));
         stack.extend(value.members().map(|(_, value)| value.id()));
+        stack.extend(value.body().map(|body| body.id()));
+        stack.extend(value.extra_ivars().map(|(_, value)| value.id()));
     }
     visited
 }

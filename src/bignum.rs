@@ -2,20 +2,16 @@
 
 use alloc::{string::String, vec::Vec};
 
-/// Largest magnitude, in bytes, that [`ValueRef::as_bigint_decimal`](crate::ValueRef::as_bigint_decimal)
-/// converts to decimal. Both conversions here are quadratic: a 64 KiB magnitude takes about half a
-/// minute, so a hostile stream could otherwise hang whatever prints or serializes it. 4096 bytes
-/// (about 9,900 digits) takes ~100 ms, and no RPG Maker data comes anywhere near.
+/// Largest magnitude, in bytes, converted to decimal. The conversion is quadratic (64 KiB takes
+/// about half a minute), so the limit keeps hostile input from stalling callers. 4096 bytes takes ~100 ms.
 pub const MAX_CONVERTIBLE_BYTES: usize = 4096;
 
-/// Most digits [`decimal_to_le_bytes`] accepts - [`MAX_CONVERTIBLE_BYTES`], in decimal.
+/// Most digits [`decimal_to_le_bytes`] accepts, not counting the sign. A [`MAX_CONVERTIBLE_BYTES`] magnitude has
+/// at most 9,865 decimal digits; this limit rounds that up.
 pub const MAX_CONVERTIBLE_DIGITS: usize = 10_000;
 
-/// Converts a little-endian magnitude (as Marshal stores it) to a decimal
-/// string, with a leading `-` if `negative` and the magnitude is nonzero.
-///
-/// Quadratic in `magnitude_le.len()`; callers handling untrusted input should keep it to
-/// [`MAX_CONVERTIBLE_BYTES`].
+/// Converts a little-endian magnitude to a decimal string, with `-` if `negative` and nonzero.
+/// Quadratic: keep untrusted input within [`MAX_CONVERTIBLE_BYTES`].
 #[allow(clippy::cast_possible_truncation)]
 #[must_use]
 pub fn le_bytes_to_decimal(negative: bool, magnitude_le: &[u8]) -> String {
@@ -49,6 +45,17 @@ pub fn le_bytes_to_decimal(negative: bool, magnitude_le: &[u8]) -> String {
         out.push(d as char);
     }
     out
+}
+
+/// `magnitude_le` without its high zero bytes. Ruby's integers never carry them, so a stream padded with them
+/// loads as the same number and dumps without the padding. Zero is the empty magnitude.
+#[must_use]
+pub(crate) fn normalize_magnitude(magnitude_le: &[u8]) -> &[u8] {
+    let end = magnitude_le
+        .iter()
+        .rposition(|&byte| byte != 0)
+        .map_or(0, |last| last + 1);
+    &magnitude_le[..end]
 }
 
 /// Parses a decimal string (optionally `-`-prefixed) into a little-endian

@@ -1,15 +1,10 @@
-//! The Marshal token writer: low-level, allocation-free byte emission.
-//!
-//! [`Writer`] mirrors [`crate::reader::Reader`]: it emits each wire-format
-//! primitive but does no symbol/object-link deduplication - that's the
-//! `alloc`-tier [`mod@crate::dump`] module's job.
+//! Low-level, allocation-free Marshal byte emission. The mirror of [`crate::reader::Reader`];
+//! it does no symbol or object-link deduplication (that is [`mod@crate::dump`]'s job).
 
 use crate::wire::{self, Tag};
 use thiserror::Error;
 
-/// Destination for emitted bytes. Implemented for a fixed `&mut [u8]`
-/// ([`SliceSink`], allocation-free) and, under `alloc`, for
-/// `alloc::vec::Vec<u8>` directly.
+/// Destination for emitted bytes: a fixed slice ([`SliceSink`]) or, under `alloc`, a `Vec<u8>`.
 #[allow(clippy::missing_errors_doc)]
 pub trait Sink {
     type Error;
@@ -22,8 +17,7 @@ pub enum WriteError {
     BufferFull,
 }
 
-/// A [`Sink`] backed by a caller-provided fixed-capacity slice - no
-/// allocation, suitable for `no_std` embedding.
+/// A [`Sink`] over a fixed-capacity slice; no allocation.
 pub struct SliceSink<'a> {
     buf: &'a mut [u8],
     len: usize,
@@ -125,9 +119,7 @@ impl<S: Sink> Writer<S> {
         self.write_bytes(encoded)
     }
 
-    /// Writes a length as a packed int. Lengths beyond `i32::MAX` cannot
-    /// occur from real Marshal payloads (the format itself cannot represent
-    /// them).
+    /// Writes a length as a packed int. Lengths above `i32::MAX` are not representable in the format.
     #[inline]
     pub fn write_len(&mut self, len: u32) -> Result<(), S::Error> {
         self.write_int(len as i32)
@@ -155,9 +147,7 @@ impl<S: Sink> Writer<S> {
         self.write_int(value)
     }
 
-    /// `magnitude_le` is the bignum's absolute value, little-endian bytes.
-    /// Marshal packs the magnitude as 16-bit little-endian words, so an odd
-    /// byte length is padded with a trailing zero.
+    /// `magnitude_le` is the absolute value, little-endian. An odd length is padded with a zero byte.
     pub fn write_bignum(&mut self, negative: bool, magnitude_le: &[u8]) -> Result<(), S::Error> {
         self.write_tag(Tag::Bignum)?;
         self.write_byte(if negative {

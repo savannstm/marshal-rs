@@ -25,10 +25,10 @@ fn build_fixture(records: usize) -> Vec<u8> {
             (b"@mp".to_vec(), mp),
             (b"@tag".to_vec(), tag),
         ];
-        elements.push(arena.push_object(b"Record".to_vec(), &ivars));
+        elements.push(arena.push_object(b"Record".to_vec(), &ivars).unwrap());
     }
 
-    let root = arena.push_array(&elements);
+    let root = arena.push_array(&elements).unwrap();
     arena.set_root(root);
     dump(&arena)
 }
