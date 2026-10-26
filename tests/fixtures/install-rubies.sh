@@ -43,13 +43,16 @@ build_ruby() {
 build_ruby 1.8.7-p374 CONFIGURE_ARGS=--without-ext=openssl "CFLAGS=$old_cflags"
 # Ruby 1.9.3 aborts in enc/ with "buffer overflow detected" under Ubuntu's default _FORTIFY_SOURCE. -O3 does not
 # turn that off by itself, so -U_FORTIFY_SOURCE disables it; the later -O3 overrides the -O2 in old_cflags.
-build_ruby 1.9.3-p551 RUBY_CONFIGURE_OPTS=--with-out-ext=openssl "CFLAGS=$old_cflags -O3 -U_FORTIFY_SOURCE"
+# MAKE_OPTS= (empty, not unset) keeps ruby-build from adding -j: parallel make races in ext/io/console (two jobs
+# write .ext/common/io/console/size.rb at once and fail with "File exists").
+build_ruby 1.9.3-p551 MAKE_OPTS= RUBY_CONFIGURE_OPTS=--with-out-ext=openssl "CFLAGS=$old_cflags -O3 -U_FORTIFY_SOURCE"
 build_ruby 2.7.8
+build_ruby 3.3.13
 build_ruby 3.4.12
 build_ruby 4.0.9
 
 list=""
-for version in 1.8.7-p374 1.9.3-p551 2.7.8 3.4.12 4.0.9; do
+for version in 1.8.7-p374 1.9.3-p551 2.7.8 3.3.13 3.4.12 4.0.9; do
   list="${list:+$list:}$prefix/$version/bin/ruby"
 done
 printf '%s\n' "$list" > "$prefix/rubies.txt"

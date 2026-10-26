@@ -177,7 +177,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/rubies
           key: rubies-${{ runner.os }}-${{ hashFiles('tests/fixtures/install-rubies.sh') }}
-      - name: Build the Rubies (1.8.7, 1.9.3, 2.7.8, 3.4.12, 4.0.9)
+      - name: Build the Rubies (1.8.7, 1.9.3, 2.7.8, 3.3.13, 3.4.12, 4.0.9)
         run: bash tests/fixtures/install-rubies.sh "$RUNNER_TEMP/rubies"
       # The configure error is only in config.log inside ruby-build's kept build directory, not in the job log.
       - name: Keep the ruby-build logs
@@ -201,7 +201,7 @@ jobs:
         run: cargo test --no-fail-fast --locked --all-features --test ruby_fixtures --test ruby_matrix
 
   ruby-windows:
-    name: Ruby 1.8.7, 1.9.3, 2.7.8 and 3.4.12 (Windows)
+    name: Ruby 1.8.7, 1.9.3, 2.7.8, 3.3.13 and 3.4.12 (Windows)
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
@@ -245,18 +245,24 @@ jobs:
         run: Add-Content -Path $env:GITHUB_ENV -Value "RUBY278=$((Get-Command ruby).Source)"
       - uses: ruby/setup-ruby@v1
         with:
+          ruby-version: "3.3.13"
+      - name: Note the Ruby 3.3.13 path
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "RUBY333=$((Get-Command ruby).Source)"
+      - uses: ruby/setup-ruby@v1
+        with:
           ruby-version: "3.4.12"
       - name: Note the Ruby 3.4.12 path
         shell: pwsh
-        run: Add-Content -Path $env:GITHUB_ENV -Value "RUBY338=$((Get-Command ruby).Source)"
+        run: Add-Content -Path $env:GITHUB_ENV -Value "RUBY3412=$((Get-Command ruby).Source)"
       # Ruby 4 must be on PATH last: the fixtures are written with it, as in the test job.
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "4.0"
       - name: Note the version matrix
         shell: pwsh
-        run: Add-Content -Path $env:GITHUB_ENV -Value "RUBIES=$env:RUBY187;$env:RUBY193;$env:RUBY278;$env:RUBY338;$((Get-Command ruby).Source)"
-      # The interpreters come from RUBY187, RUBY193, RUBY278, RUBY338 and RUBIES: a bad path fails the test, it does not skip it.
+        run: Add-Content -Path $env:GITHUB_ENV -Value "RUBIES=$env:RUBY187;$env:RUBY193;$env:RUBY278;$env:RUBY333;$env:RUBY3412;$((Get-Command ruby).Source)"
+      # The interpreters come from RUBY187, RUBY193, RUBY278, RUBY333, RUBY3412 and RUBIES: a bad path fails the test, it does not skip it.
       - name: Test the fixtures and the version matrix
         env:
           MARSHAL_REQUIRE_RUBIES: "1"
