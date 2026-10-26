@@ -179,6 +179,16 @@ jobs:
           key: rubies-${{ runner.os }}-${{ hashFiles('tests/fixtures/install-rubies.sh') }}
       - name: Build the Rubies (1.8.7, 1.9.3, 2.7.8, 3.3.8, 4.0.7)
         run: bash tests/fixtures/install-rubies.sh "$RUNNER_TEMP/rubies"
+      # The configure error is only in config.log inside ruby-build's kept build directory, not in the job log.
+      - name: Keep the ruby-build logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ruby-build-logs
+          path: |
+            /tmp/ruby-build.*.log
+            /tmp/ruby-build.*/**/config.log
+          if-no-files-found: ignore
       - name: Point the tests at the Rubies
         run: |
           echo "RUBIES=$(cat "$RUNNER_TEMP/rubies/rubies.txt")" >> "$GITHUB_ENV"

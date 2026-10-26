@@ -61,4 +61,5 @@ bench = false
 libfuzzer-sys = "0.4.13"
 marshal-rs = { path = "..", features = ["alloc", "std", "serde"] }
 marshal_rs_capi = { package = "marshal-rs-capi", path = "../capi", features = ["std", "capi"] }
-serde_json = "1.0.154"
+serde = "1.0.229"
+serde_json = { version = "1.0.154", features = ["unbounded_depth"] }
