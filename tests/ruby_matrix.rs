@@ -29,7 +29,7 @@ struct Interpreter {
     version: Version,
 }
 
-/// The version from `ruby -v`, which starts `ruby 1.9.3p551 ...` or `ruby 4.0.7 (...)`.
+/// The version from `ruby -v`, which starts `ruby 1.9.3p551 ...` or `ruby 4.0.9 (...)`.
 fn version_of(path: &str) -> Option<Version> {
     let output = Command::new(path).arg("-v").output().ok()?;
     let text = String::from_utf8_lossy(&output.stdout);

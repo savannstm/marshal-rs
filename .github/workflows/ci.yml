@@ -161,7 +161,7 @@ jobs:
       - run: cargo miri test --no-fail-fast --locked --all-features -p marshal-rs-capi
 
   ruby-matrix:
-    name: Ruby versions (1.8.7 to 4.0.7)
+    name: Ruby versions (1.8.7 to 4.0.9)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -177,7 +177,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/rubies
           key: rubies-${{ runner.os }}-${{ hashFiles('tests/fixtures/install-rubies.sh') }}
-      - name: Build the Rubies (1.8.7, 1.9.3, 2.7.8, 3.3.8, 4.0.7)
+      - name: Build the Rubies (1.8.7, 1.9.3, 2.7.8, 3.4.12, 4.0.9)
         run: bash tests/fixtures/install-rubies.sh "$RUNNER_TEMP/rubies"
       # The configure error is only in config.log inside ruby-build's kept build directory, not in the job log.
       - name: Keep the ruby-build logs
@@ -193,7 +193,7 @@ jobs:
         run: |
           echo "RUBIES=$(cat "$RUNNER_TEMP/rubies/rubies.txt")" >> "$GITHUB_ENV"
           echo "RUBY187=$RUNNER_TEMP/rubies/1.8.7-p374/bin/ruby" >> "$GITHUB_ENV"
-          echo "$RUNNER_TEMP/rubies/4.0.7/bin" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/rubies/4.0.9/bin" >> "$GITHUB_PATH"
       - name: Test the fixtures and the version matrix
         env:
           # Without this, a Ruby build that failed leaves RUBIES empty and the matrix test passes with nothing tested.
@@ -201,7 +201,7 @@ jobs:
         run: cargo test --no-fail-fast --locked --all-features --test ruby_fixtures --test ruby_matrix
 
   ruby-windows:
-    name: Ruby 1.8.7, 1.9.3, 2.7.8 and 3.3.8 (Windows)
+    name: Ruby 1.8.7, 1.9.3, 2.7.8 and 3.4.12 (Windows)
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
@@ -245,8 +245,8 @@ jobs:
         run: Add-Content -Path $env:GITHUB_ENV -Value "RUBY278=$((Get-Command ruby).Source)"
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.3.8"
-      - name: Note the Ruby 3.3.8 path
+          ruby-version: "3.4.12"
+      - name: Note the Ruby 3.4.12 path
         shell: pwsh
         run: Add-Content -Path $env:GITHUB_ENV -Value "RUBY338=$((Get-Command ruby).Source)"
       # Ruby 4 must be on PATH last: the fixtures are written with it, as in the test job.

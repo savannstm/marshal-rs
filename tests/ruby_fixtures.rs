@@ -183,7 +183,7 @@ fn run_generator(interpreter: &str, flags: &[&str], script: &str, dir: &Path) ->
     )
 }
 
-/// The major version of `interpreter`, from `ruby -v` (`ruby 4.0.7 (...)`).
+/// The major version of `interpreter`, from `ruby -v` (`ruby 4.0.9 (...)`).
 fn ruby_major(interpreter: &str) -> Option<u32> {
     let output = Command::new(interpreter).arg("-v").output().ok()?;
     String::from_utf8_lossy(&output.stdout)
@@ -265,11 +265,11 @@ fn sets() -> &'static [Set] {
             None => eprintln!("the Ruby 1.8.7 fixtures are skipped: no Ruby 1.8.7 (set RUBY187)"),
         }
 
-        // Ruby 2.7.8, 3.3.8 and 1.9.3 get the same generator as Ruby 4, where their syntax and classes allow it;
+        // Ruby 2.7.8, 3.4.12 and 1.9.3 get the same generator as Ruby 4, where their syntax and classes allow it;
         // generate.rb loads the version files they can read.
         for (label, dir_name, env, version) in [
             ("ruby2.7.8", "ruby278", "RUBY278", "2.7.8"),
-            ("ruby3.3.8", "ruby338", "RUBY338", "3.3.8"),
+            ("ruby3.4.12", "ruby338", "RUBY338", "3.4.12"),
             ("ruby1.9.3", "ruby193", "RUBY193", "1.9.3"),
         ] {
             match ruby_named(env, version) {
@@ -337,11 +337,11 @@ fn is_ruby193_binary_symbol(set: &Set, fixture: &Fixture) -> bool {
     set.label == "ruby1.9.3" && RUBY193_BINARY_SYMBOLS.contains(&fixture.name.as_str())
 }
 
-/// Ruby 2.7.8, 3.3.8 and 1.9.3 write a class name as plain bytes, where Ruby 4 wraps it in an encoding tag and they
+/// Ruby 2.7.8, 3.4.12 and 1.9.3 write a class name as plain bytes, where Ruby 4 wraps it in an encoding tag and they
 /// cannot read the tagged form. marshal-rs builds Ruby 4's form, so a value with a non-ASCII class name differs from
 /// their own dump: the same structure, written differently by different versions.
 fn is_untagged_class_set(set: &Set) -> bool {
-    matches!(set.label, "ruby2.7.8" | "ruby3.3.8" | "ruby1.9.3")
+    matches!(set.label, "ruby2.7.8" | "ruby3.4.12" | "ruby1.9.3")
 }
 
 /// Ruby 1.8 writes instance variables in the order its build hashes their names, which differs between builds:
@@ -370,13 +370,13 @@ fn refers_to_non_ascii_class(desc: &Value) -> bool {
     }
 }
 
-/// Streams Ruby 2.7.8 or 3.3.8 cannot read even as it wrote them: marshal-rs's output is not the failure, so these are
+/// Streams Ruby 2.7.8 or 3.4.12 cannot read even as it wrote them: marshal-rs's output is not the failure, so these are
 /// listed by (set, fixture, why). Each must still be reported, or the entry is stale.
 const KNOWN_OWN_READ_FAILURES: &[(&str, &str, &str)] = &[
     (
-        "ruby3.3.8",
+        "ruby3.4.12",
         "obj_class_and_module_refs",
-        "3.3.8 writes the non-ASCII class names untagged, as 2.7.8 does, and cannot read them back (Café and the \
+        "3.4.12 writes the non-ASCII class names untagged, as 2.7.8 does, and cannot read them back (Café and the \
          other class references)",
     ),
     (
