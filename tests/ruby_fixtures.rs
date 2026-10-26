@@ -338,11 +338,11 @@ fn is_ruby193_binary_symbol(set: &Set, fixture: &Fixture) -> bool {
     set.label == "ruby1.9.3" && RUBY193_BINARY_SYMBOLS.contains(&fixture.name.as_str())
 }
 
-/// Ruby 2.7.8, 3.3.13 and 1.9.3 write a class name as plain bytes, where Ruby 4 wraps it in an encoding tag and they
-/// cannot read the tagged form. marshal-rs builds Ruby 4's form, so a value with a non-ASCII class name differs from
-/// their own dump: the same structure, written differently by different versions. Ruby 3.4.12 writes the tagged form.
+/// Ruby 2.7.8 and 1.9.3 write a class name as plain bytes, where Ruby 4 wraps it in an encoding tag and they cannot read
+/// the tagged form. marshal-rs builds Ruby 4's form, so a value with a non-ASCII class name differs from their own dump:
+/// the same structure, written differently by different versions. Ruby 3.3.13 and 3.4.12 write the tagged form.
 fn is_untagged_class_set(set: &Set) -> bool {
-    matches!(set.label, "ruby2.7.8" | "ruby3.3.13" | "ruby1.9.3")
+    matches!(set.label, "ruby2.7.8" | "ruby1.9.3")
 }
 
 /// Ruby 1.8 writes instance variables in the order its build hashes their names, which differs between builds:
@@ -371,15 +371,9 @@ fn refers_to_non_ascii_class(desc: &Value) -> bool {
     }
 }
 
-/// Streams Ruby 2.7.8 or 3.3.13 cannot read even as it wrote them: marshal-rs's output is not the failure, so these are
+/// Streams Ruby 2.7.8 cannot read even as it wrote them: marshal-rs's output is not the failure, so these are
 /// listed by (set, fixture, why). Each must still be reported, or the entry is stale.
 const KNOWN_OWN_READ_FAILURES: &[(&str, &str, &str)] = &[
-    (
-        "ruby3.3.13",
-        "obj_class_and_module_refs",
-        "3.3.13 writes the non-ASCII class names untagged, as 2.7.8 does, and cannot read them back (Café and the \
-         other class references)",
-    ),
     (
         "ruby2.7.8",
         "enc_big5_hkscs",
