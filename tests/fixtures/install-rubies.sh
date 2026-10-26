@@ -16,8 +16,9 @@ if [ ! -x "$ruby_build/bin/ruby-build" ]; then
 fi
 
 # GCC 14 rejects the implicit declarations and int conversions of the 1.8.7 and 1.9.3 sources. Their OpenSSL
-# extension does not build against OpenSSL 3, so they are built without it.
-old_cflags="-O2 -std=gnu89 -fcommon -Wno-error=implicit-int -Wno-error=implicit-function-declaration -Wno-error=int-conversion -Wno-error=incompatible-pointer-types -Wno-error=incompatible-function-pointer-types -Wno-error=return-mismatch -Wno-error=declaration-missing-parameter-type"
+# extension does not build against OpenSSL 3, so they are built without it. The -Wno-error= flags name only
+# warnings GCC 14 knows: GCC 13 (the ubuntu-24.04 runner) fails configure's compiler check on any unknown name.
+old_cflags="-O2 -std=gnu89 -fcommon -Wno-error=implicit-int -Wno-error=implicit-function-declaration -Wno-error=int-conversion -Wno-error=incompatible-pointer-types"
 
 build_ruby() {
   local version=$1
