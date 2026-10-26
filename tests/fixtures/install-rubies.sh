@@ -38,8 +38,9 @@ build_ruby() {
   fi
 }
 
-# Ruby 1.8.7's configure ignores --with-out-ext (only the 1.9+ option), so it takes --without-ext, which extmk.rb reads.
-build_ruby 1.8.7-p374 RUBY_CONFIGURE_OPTS=--without-ext=openssl "CFLAGS=$old_cflags"
+# Ruby 1.8.7's configure rejects --without-ext=openssl ("invalid package name"), and ignores --with-out-ext. Its
+# extmk.rb reads --without-ext from the CONFIGURE_ARGS environment variable (mkmf.rb), so pass it there instead.
+build_ruby 1.8.7-p374 CONFIGURE_ARGS=--without-ext=openssl "CFLAGS=$old_cflags"
 build_ruby 1.9.3-p551 RUBY_CONFIGURE_OPTS=--with-out-ext=openssl "CFLAGS=$old_cflags"
 build_ruby 2.7.8
 build_ruby 3.3.8
