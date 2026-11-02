@@ -977,18 +977,34 @@ impl Arena<'_> {
             node.b += 1;
             return true;
         }
+        self.insert_extra_ivar(target, sym, value);
+        true
+    }
+
+    /// Like [`Self::push_extra_ivar_sym`], but an `Object` keeps the ivar beside its members, as the reader does for
+    /// an `I` wrapper. Used where a stream says the ivar is an extra one (the envelope's `__ivars`), so that it
+    /// comes back out as one.
+    pub(crate) fn push_wrapper_ivar_sym(&mut self, target: ValueId, sym: SymId, value: ValueId) -> bool {
+        if self.symbol_bytes(sym).is_empty() || !self.can_carry_extras(target) || !self.contains(value) {
+            return false;
+        }
+        self.insert_extra_ivar(target, sym, value);
+        true
+    }
+
+    fn insert_extra_ivar(&mut self, target: ValueId, sym: SymId, value: ValueId) {
+        let kind = self.nodes[target as usize].kind;
         // `push_class`/`push_module` already tag a non-ASCII path UTF-8; an `E` given later replaces that tag.
-        if matches!(node.kind, Kind::Class | Kind::Module) && self.symbol_bytes(sym) == b"E" {
+        if matches!(kind, Kind::Class | Kind::Module) && self.symbol_bytes(sym) == b"E" {
             let lo = self.extra_ivars.partition_point(|e| e.0 < target);
             let hi = self.extra_ivars.partition_point(|e| e.0 <= target);
             if let Some(existing) = self.extra_ivars[lo..hi].iter_mut().find(|e| e.1 == sym) {
                 existing.2 = value;
-                return true;
+                return;
             }
         }
         let at = self.extra_ivars.partition_point(|e| e.0 <= target);
         self.extra_ivars.insert(at, (target, sym, value));
-        true
     }
 
     /// The `children` index of element `index` of an `Array` or of a `Hash` entry's key; `None` if out of range.

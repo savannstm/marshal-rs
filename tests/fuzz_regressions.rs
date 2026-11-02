@@ -29,3 +29,22 @@ fn an_empty_instance_variable_name_is_refused_on_serialize() {
 
     assert!(serde_json::to_string(&arena).is_err());
 }
+
+/// An `Object` whose class is `/IE` and which carries the wrapper ivar `E => true`. The reader keeps that ivar beside
+/// the object's members, so the envelope's `__ivars` must read back the same way; reading it as a member made the
+/// JSON change on the second round trip.
+#[cfg(feature = "serde")]
+#[test]
+fn an_object_wrapper_ivar_survives_a_json_round_trip() {
+    use serde::Deserialize;
+
+    let data: &'static [u8] = include_bytes!("fixtures/fuzz-ser-object-ivar.bin");
+    let arena = load(data).expect("the stream loads");
+    let json = serde_json::to_string(&arena).expect("the value serializes");
+
+    let mut de = serde_json::Deserializer::from_str(&json);
+    let back = marshal_rs::Arena::<'static>::deserialize(&mut de).expect("own JSON parses");
+    de.end().expect("own JSON ends");
+
+    assert_eq!(serde_json::to_string(&back).expect("serializes again"), json);
+}

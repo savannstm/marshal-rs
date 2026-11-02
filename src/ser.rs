@@ -712,7 +712,7 @@ impl<'de> Visitor<'de> for ValueVisitor<'_> {
                 }
             }
             for (name, value) in ivars {
-                if !arena.push_extra_ivar_sym(id, name, value) {
+                if !arena.push_wrapper_ivar_sym(id, name, value) {
                     return Err(de::Error::custom(
                         "this value cannot have \"__ivars\", or one has an empty name",
                     ));
