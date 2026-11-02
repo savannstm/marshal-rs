@@ -1,3 +1,8 @@
+## 4.0.1
+
+- **Found by fuzzing!!!** Fixed JSON round trip for objects that carry wrapper ivars (`I`-wrapped `E` etc.). Previously, `__ivars` on an `object` envelope was loaded as a member, so the JSON changed on the second round trip and `fuzz/ser` crashed. It now loads as an extra ivar, matching what Marshal loading produces.
+- Changed deserializing an `object` envelope with `__ivars` now yields extra ivars rather than members. Affects `members()`, `extra_ivars()`, and `dump` output for those values. JSON written by earlier versions still loads, but may dump differently.
+
 ## 4.0.0
 
 - **Breaking:** `load` now rejects bytes after the value, in Rust, C and WASM. Use `load_many` for files holding several streams.
